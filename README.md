@@ -42,6 +42,12 @@ servicio técnico y bajas).
 - **Importar equipos** (`.xlsx`, `.xlsm` o `.csv`) con **detección automática de la
   hoja y de la fila de encabezados** (las planillas reales traen títulos y leyendas
   arriba de la tabla), y **respaldo/restauración** completa en JSON.
+- **Importar el expediente completo** desde el libro de estructura
+  (`Estructura_Datos_Correctivo.xlsx`, una hoja por etapa): carga las Órdenes de
+  Trabajo y todas sus etapas vinculadas por Folio SIGEM, **normalizando las fechas**
+  (texto `dd-mm-aaaa` y números de serie de Excel), autocompletando Equipo/Serie/
+  Servicio desde el maestro y **extendiendo los catálogos** con los técnicos y
+  proveedores nuevos.
 - **Exportar a Excel** (`.xlsx`) cada módulo y el Tablero.
 - Interfaz en **español (Chile)**, responsive (escritorio/tablet) y accesible por
   teclado.

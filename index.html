@@ -453,6 +453,29 @@ function diasDesde(iso){
   return Math.floor((hoy0() - d)/86400000);
 }
 
+/** Normaliza una fecha importada a ISO (aaaa-mm-dd). Acepta:
+ *  - ISO ya formado (aaaa-mm-dd)
+ *  - texto chileno dd-mm-aaaa o dd/mm/aaaa
+ *  - número de serie de Excel (días desde 1899-12-30)
+ *  Si no la reconoce, devuelve el valor original sin tocar. */
+function normalizarFecha(v){
+  if(v==null) return "";
+  v=String(v).trim(); if(!v) return "";
+  if(/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  var m=v.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);            // dd-mm-aaaa
+  if(m) return m[3]+"-"+("0"+m[2]).slice(-2)+"-"+("0"+m[1]).slice(-2);
+  m=v.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);                // aaaa/mm/dd
+  if(m) return m[1]+"-"+("0"+m[2]).slice(-2)+"-"+("0"+m[3]).slice(-2);
+  if(/^\d+(\.\d+)?$/.test(v)){                                     // serie de Excel
+    var n=Math.floor(Number(v));
+    if(n>=20000 && n<=60000){
+      var dt=new Date(Date.UTC(1899,11,30)+n*86400000);
+      return dt.getUTCFullYear()+"-"+("0"+(dt.getUTCMonth()+1)).slice(-2)+"-"+("0"+dt.getUTCDate()).slice(-2);
+    }
+  }
+  return v;
+}
+
 /** Formatea un número como moneda chilena (CLP, sin decimales). */
 function fmtCLP(v){
   if(v===""||v==null) return "";
@@ -682,6 +705,10 @@ var ENTIDADES = {
       {name:"fechaReporte", label:"Fecha reporte", type:"date"},
       {name:"archivado", label:"Archivado carpeta (Cristián)", type:"boolean"},
       {name:"fechaCierre", label:"Fecha cierre", type:"date"},
+      {sec:"Seguimiento del reporte"},
+      {name:"reporteRecibido", label:"¿Reporte recibido?", type:"boolean"},
+      {name:"responsableReporte", label:"Responsable de conseguir reporte", type:"select", catalog:"tecnicos"},
+      {name:"responsableAdministrativo", label:"Responsable administrativo", type:"select", catalog:"tecnicos"},
       {name:"descripcion", label:"Descripción tarea", type:"textarea", full:true}
     ],
     cols:[
@@ -751,7 +778,11 @@ var ENTIDADES = {
       {name:"fechaRetorno", label:"Fecha retorno", type:"date", hint:"Sin retorno = el caso figura En Servicio Técnico."},
       {name:"folioGuia", label:"Folio guía despacho", type:"text"},
       {name:"estadoRetorno", label:"Estado al retorno", type:"select", catalog:"estadoEquipo"},
-      {name:"decisionNoOperativo", label:"Decisión si No Operativo", type:"select", catalog:"decisionReevaluacion"}
+      {name:"decisionNoOperativo", label:"Decisión si No Operativo", type:"select", catalog:"decisionReevaluacion"},
+      {sec:"Seguimiento del reporte"},
+      {name:"reporteRecibido", label:"¿Reporte recibido?", type:"boolean"},
+      {name:"responsableReporte", label:"Responsable de conseguir reporte", type:"select", catalog:"tecnicos"},
+      {name:"responsableAdministrativo", label:"Responsable administrativo", type:"select", catalog:"tecnicos"}
     ],
     cols:[
       {k:"folio",label:"Folio SIGEM",folio:true},{k:"equipoCalc",label:"Equipo"},
@@ -1390,7 +1421,9 @@ function renderExpediente(folio){
     items.push({fecha:r.fechaVisita, tipo:"Visita Técnica", color:"#7c3aed", ent:"visitas", id:r.id,
       campos:[["Proveedor",r.proveedor],["Ingeniero externo",r.ingenieroExterno],["¿Reparó?",r.reparo],
         ["Estado final",r.estadoFinal],["N° Reporte",r.nReporte],["Fecha reporte",fmtFecha(r.fechaReporte)],
-        ["Archivado (Cristián)",r.archivado],["Descripción",r.descripcion],["Fecha cierre",fmtFecha(r.fechaCierre)]]});
+        ["Archivado (Cristián)",r.archivado],["¿Reporte recibido?",r.reporteRecibido],
+        ["Resp. conseguir reporte",r.responsableReporte],["Resp. administrativo",r.responsableAdministrativo],
+        ["Descripción",r.descripcion],["Fecha cierre",fmtFecha(r.fechaCierre)]]});
   });
   DB.compras.filter(byFolio(folio)).forEach(function(r){
     items.push({fecha:r.fechaCotizacion||r.fechaEmisionOC, tipo:"Línea de Compra", color:"var(--warn)", ent:"compras", id:r.id,
@@ -1408,7 +1441,8 @@ function renderExpediente(folio){
       campos:[["N° Hoja envío",r.nHojaEnvio],["Responsable",r.responsableEnvia],["Empresa destino",r.empresaDestino],
         ["N° Reporte",r.nReporte],["Fecha reporte",fmtFecha(r.fechaReporte)],["Archivado (Cristián)",r.archivado],
         ["Fecha retorno",fmtFecha(r.fechaRetorno)],["Folio guía",r.folioGuia],["Estado retorno",r.estadoRetorno],
-        ["Decisión si No Op.",r.decisionNoOperativo]]});
+        ["Decisión si No Op.",r.decisionNoOperativo],["¿Reporte recibido?",r.reporteRecibido],
+        ["Resp. conseguir reporte",r.responsableReporte],["Resp. administrativo",r.responsableAdministrativo]]});
   });
   DB.bajas.filter(byFolio(folio)).forEach(function(r){
     items.push({fecha:r.fechaBaja, tipo:"Baja", color:"var(--neutral)", ent:"bajas", id:r.id,
@@ -1587,6 +1621,23 @@ function renderDatos(){
         '<input type="file" id="fileEquipos" accept=".xlsx,.xlsm,.csv" style="display:none">'+
         '<div id="previewEquipos"></div>'+
       '</div>'+
+      // Importar estructura de datos (expediente completo)
+      '<div class="card data-card card-pad" style="grid-column:span 2">'+
+        '<h3>'+ic("expediente")+'Importar expediente (estructura .xlsx)</h3>'+
+        '<p>Carga el libro <b>Estructura_Datos_Correctivo</b> (una hoja por etapa). Importa las '+
+        '<b>Órdenes de Trabajo</b> y todas sus etapas vinculadas por Folio SIGEM. Detecta encabezados por nombre, '+
+        'normaliza fechas (texto y formato Excel), autocompleta Equipo/Serie/Servicio desde el maestro y agrega al catálogo '+
+        'los técnicos y proveedores nuevos. Si la base no tiene equipos, también importa la hoja <b>Equipos</b>.</p>'+
+        '<div class="radio-row">'+
+          '<label><input type="radio" name="modoEstructura" value="reemplazar" checked> Reemplazar expediente</label>'+
+          '<label><input type="radio" name="modoEstructura" value="complementar"> Complementar (agregar)</label>'+
+        '</div>'+
+        '<div class="dropzone" id="dzEstructura" tabindex="0" role="button" aria-label="Seleccionar libro de estructura">'+
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/></svg>'+
+          '<div>Haz clic o arrastra aquí el libro <b>.xlsx</b> de estructura de datos</div></div>'+
+        '<input type="file" id="fileEstructura" accept=".xlsx,.xlsm" style="display:none">'+
+        '<div id="previewEstructura"></div>'+
+      '</div>'+
       // Exportar respaldo
       '<div class="card data-card card-pad">'+
         '<h3>'+ic("datos")+'Respaldo completo (JSON)</h3>'+
@@ -1620,20 +1671,26 @@ function renderDatos(){
       '</div>'+
     '</div>';
 
-  // Eventos de la zona de carga de equipos
-  var dz=document.getElementById("dzEquipos");
-  var fi=document.getElementById("fileEquipos");
+  // Conectar las zonas de carga (clic, teclado y arrastrar/soltar)
+  conectarDropzone("dzEquipos","fileEquipos",importarEquipos);
+  conectarDropzone("dzEstructura","fileEstructura",importarEstructura);
+
+  document.getElementById("fileRestore").addEventListener("change",function(e){
+    if(e.target.files[0]) restaurarJSON(e.target.files[0]);
+  });
+}
+
+/* Conecta una zona de arrastre con su input de archivo y la función importadora. */
+function conectarDropzone(dzId, fileId, importar){
+  var dz=document.getElementById(dzId), fi=document.getElementById(fileId);
+  if(!dz||!fi) return;
   dz.addEventListener("click",function(){ fi.click(); });
   dz.addEventListener("keydown",function(e){ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); fi.click(); }});
   dz.addEventListener("dragover",function(e){ e.preventDefault(); dz.classList.add("drag"); });
   dz.addEventListener("dragleave",function(){ dz.classList.remove("drag"); });
   dz.addEventListener("drop",function(e){ e.preventDefault(); dz.classList.remove("drag");
-    if(e.dataTransfer.files[0]) importarEquipos(e.dataTransfer.files[0]); });
-  fi.addEventListener("change",function(){ if(fi.files[0]) importarEquipos(fi.files[0]); });
-
-  document.getElementById("fileRestore").addEventListener("change",function(e){
-    if(e.target.files[0]) restaurarJSON(e.target.files[0]);
-  });
+    if(e.dataTransfer.files[0]) importar(e.dataTransfer.files[0]); });
+  fi.addEventListener("change",function(){ if(fi.files[0]) importar(fi.files[0]); });
 }
 
 /* ===========================================================================
@@ -1792,6 +1849,152 @@ function aplicarImportEquipos(nuevos, modo, prev, elegida, analisis){
 
   pintarNav("datos");
   toast(nuevos.length+" equipos importados desde «"+elegida.nombre+"».","ok");
+}
+
+/* ===========================================================================
+   IMPORTAR ESTRUCTURA DE DATOS COMPLETA (libro .xlsx con una hoja por entidad)
+   Carga las etapas del expediente (OT, terreno, visitas, compra, repuestos,
+   envíos, bajas) desde el libro "Estructura_Datos_Correctivo". Mapea columnas por
+   el nombre del encabezado, normaliza fechas (texto dd-mm-aaaa y series de Excel),
+   autocompleta los campos (auto) de la OT y extiende los catálogos.
+   =========================================================================== */
+
+/* Relación entidad -> patrón del nombre de hoja. */
+var HOJAS_ESTRUCTURA=[
+  {ent:"ot",        re:/ordenes de trabajo/},
+  {ent:"compras",   re:/linea de compra/},
+  {ent:"repuestos", re:/repuestos/},
+  {ent:"visitas",   re:/visitas tecnicas/},
+  {ent:"envios",    re:/servicio tecnico|envios/},
+  {ent:"bajas",     re:/bajas/},
+  {ent:"terreno",   re:/reparacion en terreno/}
+];
+
+/* Normaliza una etiqueta de columna para comparar (sin acentos/símbolos y sin "auto"). */
+function normLabel(s){ return norm(s).replace(/(^| )auto( |$)/g," ").replace(/\s+/g," ").trim(); }
+
+/* Mapea los índices de columna de una hoja a los nombres de campo de la entidad. */
+function mapearColumnasEntidad(ent, headerRow){
+  var labelToField={};
+  ENTIDADES[ent].campos.forEach(function(c){ if(!c.sec) labelToField[normLabel(c.label)]=c.name; });
+  var idxToField={};
+  (headerRow||[]).forEach(function(h,i){ var nh=normLabel(h); if(nh && labelToField[nh]) idxToField[i]=labelToField[nh]; });
+  return idxToField;
+}
+
+/* Encuentra la fila de encabezados (la que contiene «Folio SIGEM»). */
+function detectarHeaderEstructura(filas){
+  for(var i=0;i<Math.min(10,filas.length);i++)
+    if((filas[i]||[]).some(function(c){return normLabel(c)==="folio sigem";})) return i;
+  for(var j=0;j<Math.min(10,filas.length);j++)
+    if((filas[j]||[]).some(function(c){return String(c).trim()!=="";})) return j;
+  return 0;
+}
+
+function importarEstructura(file){
+  var prev=document.getElementById("previewEstructura");
+  prev.innerHTML='<div class="preview-box">Leyendo «'+esc(file.name)+'»…</div>';
+  var nombre=file.name.toLowerCase();
+  if(!(nombre.endsWith(".xlsx")||nombre.endsWith(".xlsm"))){
+    errorPrev(prev,"Formato no soportado. Usa el libro de estructura .xlsx."); return;
+  }
+  file.arrayBuffer().then(function(buf){ return leerXLSX(buf); })
+    .then(function(sheets){ procesarEstructura(sheets, prev); })
+    .catch(function(err){ errorPrev(prev,"<b>No se pudo leer el archivo:</b> "+esc(err.message)); });
+}
+
+function procesarEstructura(sheets, prev){
+  try{
+    var modo=(document.querySelector('input[name="modoEstructura"]:checked')||{}).value||"reemplazar";
+    var byName={};
+    sheets.forEach(function(sh){ byName[norm(sh.nombre)]=sh; });
+    var findSheet=function(re){ for(var k in byName){ if(re.test(k)) return byName[k]; } return null; };
+    var resumen=[];
+
+    // 1) Equipos: solo si la base está vacía (no pisar una importación de equipos previa)
+    var equiposSheet=findSheet(/^equipos$/)||findSheet(/equipos/);
+    if(equiposSheet){
+      var a=analizarHoja(equiposSheet);
+      if(a && DB.equipos.length===0){
+        var nuevosEq=[];
+        for(var r=a.hdr+1;r<a.filas.length;r++){
+          var fe=a.filas[r]; if(!fe || !String(fe[a.invIdx]||"").trim()) continue;
+          var eq={}; CAMPOS_EQUIPO.forEach(function(c){eq[c]="";});
+          for(var ic in a.idxToCampo){ var cp=a.idxToCampo[ic],vv=fe[ic]; eq[cp]=vv==null?"":String(vv).trim(); }
+          eq._id=eq.id||nuevoId(); nuevosEq.push(eq);
+        }
+        DB.equipos=nuevosEq; reindexarEquipos();
+        resumen.push(["Equipos",nuevosEq.length,""]);
+      }else if(a){
+        resumen.push(["Equipos",0,"omitidos: ya hay "+DB.equipos.length+" cargados"]);
+      }
+    }
+
+    // 2) Entidades del caso
+    var stores=["ordenes","terreno","visitas","compras","repuestos","envios","bajas"];
+    if(modo==="reemplazar") stores.forEach(function(s){ DB[s]=[]; });
+
+    var nuevosCat={tecnicos:{},empresas:{}};
+    HOJAS_ESTRUCTURA.forEach(function(h){
+      var sh=findSheet(h.re); if(!sh) return;
+      var cfg=ENTIDADES[h.ent];
+      var hdr=detectarHeaderEstructura(sh.filas);
+      var idxToField=mapearColumnasEntidad(h.ent, sh.filas[hdr]);
+      var folioIdx=-1; for(var i in idxToField){ if(idxToField[i]==="folio"){ folioIdx=+i; break; } }
+      if(folioIdx<0) return; // sin columna folio no se puede vincular
+      var camposPorNombre={}; cfg.campos.forEach(function(c){ if(!c.sec) camposPorNombre[c.name]=c; });
+      var count=0;
+      for(var rr=hdr+1;rr<sh.filas.length;rr++){
+        var fila=sh.filas[rr]; if(!fila) continue;
+        var folio=String(fila[folioIdx]||"").trim(); if(!folio) continue;
+        var rec={};
+        for(var ci in idxToField){
+          var field=idxToField[ci], c=camposPorNombre[field];
+          var val=fila[ci]; val = val==null ? "" : String(val).trim();
+          if(c){
+            if(c.type==="date") val=normalizarFecha(val);
+            if(c.type==="select" && (c.catalog==="tecnicos"||c.catalog==="empresas") && val) nuevosCat[c.catalog][val]=true;
+          }
+          rec[field]=val;
+        }
+        if(h.ent==="ot"){
+          var e=equiposPorInventario[String(rec.inventario||"").trim()];
+          if(e){ if(!rec.equipo) rec.equipo=e.equipo; if(!rec.serie) rec.serie=e.serie; if(!rec.servicio) rec.servicio=e.servicio; }
+          if(!rec.estadoEvento) rec.estadoEvento="Abierto";
+          if(modo==="complementar"){
+            var ya=DB.ordenes.findIndex(function(o){return o.folio===folio;});
+            if(ya>=0){ rec.id=DB.ordenes[ya].id; DB.ordenes[ya]=rec; count++; continue; }
+          }
+        }
+        rec.id=nuevoId();
+        DB[cfg.store].push(rec); count++;
+      }
+      resumen.push([cfg.titulo,count,""]);
+    });
+
+    // 3) Extender catálogos con valores nuevos hallados
+    ["tecnicos","empresas"].forEach(function(cat){
+      if(!DB.catalogos[cat]) DB.catalogos[cat]=[];
+      Object.keys(nuevosCat[cat]).forEach(function(v){
+        if(!DB.catalogos[cat].some(function(x){return norm(x)===norm(v);})) DB.catalogos[cat].push(v);
+      });
+      DB.catalogos[cat].sort(function(a,b){return String(a).localeCompare(String(b),"es");});
+    });
+
+    reindexarEquipos(); derivarServicios(); guardarDB();
+
+    var totalCasos=resumen.reduce(function(acc,x){return acc + (x[0]==="Equipos"?0:x[1]);},0);
+    var filasR=resumen.map(function(x){
+      return '<tr><td>'+esc(x[0])+'</td><td class="num"><b>'+x[1]+'</b></td><td style="color:var(--text-soft)">'+esc(x[2]||"")+'</td></tr>';
+    }).join("");
+    prev.innerHTML='<div class="preview-box" style="border-color:var(--ok-bd)">'+
+      '<b>Estructura importada ('+(modo==="reemplazar"?"reemplazo":"complemento")+').</b> '+totalCasos+' registros de expediente.'+
+      '<table class="data" style="margin-top:8px;font-size:12.5px"><thead><tr><th>Entidad</th><th>Registros</th><th></th></tr></thead><tbody>'+filasR+'</tbody></table></div>';
+    pintarNav("datos");
+    toast("Estructura importada: "+totalCasos+" registros.","ok");
+  }catch(err){
+    errorPrev(prev,"<b>Error al importar la estructura:</b> "+esc(err.message));
+  }
 }
 
 /* --- Parser CSV robusto (detecta delimitador , ; o tab; respeta comillas) --- */
