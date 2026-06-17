@@ -1574,7 +1574,8 @@ function renderDatos(){
       // Importar equipos
       '<div class="card data-card card-pad" style="grid-column:span 2">'+
         '<h3>'+ic("equipos")+'Importar Equipos (Excel / CSV)</h3>'+
-        '<p>Carga el listado maestro desde un archivo <b>.xlsx</b> o <b>.csv</b>. Se mapean las columnas por su nombre. '+
+        '<p>Carga el listado maestro desde un archivo <b>.xlsx</b>, <b>.xlsm</b> o <b>.csv</b>. Se detecta automáticamente '+
+        'la hoja y la fila de encabezados, y se mapean las columnas por su nombre. '+
         'El <b>N° Inventario</b> y la <b>Serie</b> se conservan como texto (no se pierden los ceros a la izquierda).</p>'+
         '<div class="radio-row">'+
           '<label><input type="radio" name="modoImport" value="reemplazar" checked> Reemplazar listado</label>'+
@@ -1582,8 +1583,8 @@ function renderDatos(){
         '</div>'+
         '<div class="dropzone" id="dzEquipos" tabindex="0" role="button" aria-label="Seleccionar archivo de equipos">'+
           '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/></svg>'+
-          '<div>Haz clic o arrastra aquí tu archivo <b>.xlsx</b> o <b>.csv</b></div></div>'+
-        '<input type="file" id="fileEquipos" accept=".xlsx,.csv" style="display:none">'+
+          '<div>Haz clic o arrastra aquí tu archivo <b>.xlsx</b>, <b>.xlsm</b> o <b>.csv</b></div></div>'+
+        '<input type="file" id="fileEquipos" accept=".xlsx,.xlsm,.csv" style="display:none">'+
         '<div id="previewEquipos"></div>'+
       '</div>'+
       // Exportar respaldo
@@ -1656,66 +1657,100 @@ var MAPA_ENCABEZADOS={
   "clasificacion":"clasificacion","clasificacion equipo":"clasificacion"
 };
 
+/* Hojas leídas del último archivo (permite reimportar desde otra hoja sin releer). */
+var ultimasHojas=null;
+
 function importarEquipos(file){
   var nombre=file.name.toLowerCase();
   var prev=document.getElementById("previewEquipos");
   prev.innerHTML='<div class="preview-box">Leyendo «'+esc(file.name)+'»…</div>';
 
-  var procesar=function(filas){
-    try{
-      if(!filas || filas.length<2){ throw new Error("El archivo no tiene filas de datos."); }
-      // Encabezados
-      var headers=filas[0].map(function(h){return norm(h);});
-      var idxToCampo={};
-      headers.forEach(function(h,i){ if(MAPA_ENCABEZADOS[h]) idxToCampo[i]=MAPA_ENCABEZADOS[h]; });
-      var camposDetectados=Object.keys(idxToCampo).map(function(i){return idxToCampo[i];});
-      if(camposDetectados.indexOf("inventario")<0){
-        throw new Error("No se encontró la columna «N° Inventario». Revisa los encabezados.");
-      }
-      // Construir equipos
-      var nuevos=[];
-      for(var r=1;r<filas.length;r++){
-        var fila=filas[r];
-        if(!fila || fila.every(function(c){return String(c==null?"":c).trim()==="";})) continue; // fila vacía
-        var eq={};
-        CAMPOS_EQUIPO.forEach(function(c){eq[c]="";});
-        for(var i in idxToCampo){
-          var campo=idxToCampo[i];
-          var val=fila[i];
-          // Inventario y Serie SIEMPRE como texto (preservar ceros a la izquierda)
-          eq[campo] = val==null ? "" : String(val).trim();
-        }
-        if(!eq.inventario) continue; // sin inventario no sirve
-        eq._id = eq.id || nuevoId();
-        nuevos.push(eq);
-      }
-      if(!nuevos.length){ throw new Error("No se encontraron equipos válidos (con N° Inventario)."); }
-
-      var modo=(document.querySelector('input[name="modoImport"]:checked')||{}).value||"reemplazar";
-      aplicarImportEquipos(nuevos, modo, camposDetectados.length, prev);
-    }catch(err){
-      prev.innerHTML='<div class="preview-box" style="border-color:var(--danger-bd);color:var(--danger)"><b>Error:</b> '+esc(err.message)+'</div>';
-    }
-  };
-
   if(nombre.endsWith(".csv")){
     var reader=new FileReader();
-    reader.onload=function(){ procesar(parseCSV(reader.result)); };
-    reader.onerror=function(){ prev.innerHTML='<div class="preview-box" style="color:var(--danger)">No se pudo leer el archivo.</div>'; };
+    reader.onload=function(){ ultimasHojas=[{nombre:"CSV", filas:parseCSV(reader.result)}]; procesarHojas(prev, null); };
+    reader.onerror=function(){ errorPrev(prev,"No se pudo leer el archivo."); };
     reader.readAsText(file,"UTF-8");
-  }else if(nombre.endsWith(".xlsx")){
+  }else if(nombre.endsWith(".xlsx")||nombre.endsWith(".xlsm")){
     file.arrayBuffer().then(function(buf){ return leerXLSX(buf); })
-      .then(function(filas){ procesar(filas); })
+      .then(function(sheets){ ultimasHojas=sheets; procesarHojas(prev, null); })
       .catch(function(err){
-        prev.innerHTML='<div class="preview-box" style="border-color:var(--danger-bd);color:var(--danger)">'+
-          '<b>No se pudo leer el .xlsx:</b> '+esc(err.message)+'<br>Sugerencia: en Excel usa «Guardar como → CSV UTF-8» e importa el CSV.</div>';
+        errorPrev(prev,"<b>No se pudo leer el archivo Excel:</b> "+esc(err.message)+
+          "<br>Sugerencia: en Excel usa «Guardar como → CSV UTF-8» e importa el CSV.");
       });
   }else{
-    prev.innerHTML='<div class="preview-box" style="color:var(--danger)">Formato no soportado. Usa .xlsx o .csv</div>';
+    errorPrev(prev,"Formato no soportado. Usa .xlsx, .xlsm o .csv");
   }
 }
+function errorPrev(prev,html){
+  prev.innerHTML='<div class="preview-box" style="border-color:var(--danger-bd);color:var(--danger)">'+html+'</div>';
+}
 
-function aplicarImportEquipos(nuevos, modo, nCols, prev){
+/* Detecta la fila de encabezados dentro de una hoja. Las planillas reales suelen
+   traer títulos/leyendas arriba, así que se busca (en las primeras filas) una que
+   contenga a la vez «N° Inventario» y «Equipo». */
+function detectarFilaEncabezado(filas){
+  var max=Math.min(30, filas.length);
+  for(var i=0;i<max;i++){
+    var fila=filas[i]||[], inv=false, eq=false;
+    for(var j=0;j<fila.length;j++){
+      var nm=MAPA_ENCABEZADOS[norm(fila[j])];
+      if(nm==="inventario") inv=true;
+      if(nm==="equipo") eq=true;
+    }
+    if(inv && eq) return i;
+  }
+  return -1;
+}
+
+/* Analiza una hoja: ubica encabezados, mapea columnas y cuenta filas con inventario. */
+function analizarHoja(sh){
+  var hdr=detectarFilaEncabezado(sh.filas);
+  if(hdr<0) return null;
+  var fila=sh.filas[hdr], idxToCampo={}, usados={}, mapped=0, invIdx=-1;
+  fila.forEach(function(h,i){
+    var nm=MAPA_ENCABEZADOS[norm(h)];
+    if(nm && !usados[nm]){ idxToCampo[i]=nm; usados[nm]=true; mapped++; if(nm==="inventario") invIdx=i; }
+  });
+  var dataRows=0;
+  for(var r=hdr+1;r<sh.filas.length;r++){ if(String((sh.filas[r]||[])[invIdx]||"").trim()) dataRows++; }
+  return {nombre:sh.nombre, filas:sh.filas, hdr:hdr, idxToCampo:idxToCampo, invIdx:invIdx, mapped:mapped, dataRows:dataRows};
+}
+
+/* Elige la mejor hoja (o la forzada por el usuario) y construye los equipos. */
+function procesarHojas(prev, hojaForzada){
+  if(!ultimasHojas || !ultimasHojas.length){ errorPrev(prev,"El archivo no tiene hojas legibles."); return; }
+  var analisis=ultimasHojas.map(analizarHoja).filter(Boolean);
+  if(!analisis.length){
+    errorPrev(prev,"No se encontró ninguna hoja con columnas «N° Inventario» y «Equipo». "+
+      "Verifica que el listado de equipos tenga esos encabezados.");
+    return;
+  }
+  // Hoja elegida: la forzada, o la de mayor cantidad de equipos (desempate: más columnas mapeadas).
+  var elegida=null;
+  if(hojaForzada!=null) elegida=analisis.find(function(a){return a.nombre===hojaForzada;});
+  if(!elegida) elegida=analisis.slice().sort(function(a,b){ return (b.dataRows-a.dataRows)||(b.mapped-a.mapped); })[0];
+
+  var nuevos=[];
+  for(var r=elegida.hdr+1;r<elegida.filas.length;r++){
+    var fila=elegida.filas[r];
+    if(!fila) continue;
+    if(!String(fila[elegida.invIdx]||"").trim()) continue; // sin inventario => saltar
+    var eq={}; CAMPOS_EQUIPO.forEach(function(c){eq[c]="";});
+    for(var i in elegida.idxToCampo){
+      var campo=elegida.idxToCampo[i], val=fila[i];
+      // N° Inventario y Serie SIEMPRE como texto (preservar ceros a la izquierda)
+      eq[campo] = val==null ? "" : String(val).trim();
+    }
+    eq._id = eq.id || nuevoId();
+    nuevos.push(eq);
+  }
+  if(!nuevos.length){ errorPrev(prev,"La hoja «"+esc(elegida.nombre)+"» no tiene equipos con N° Inventario."); return; }
+
+  var modo=(document.querySelector('input[name="modoImport"]:checked')||{}).value||"reemplazar";
+  aplicarImportEquipos(nuevos, modo, prev, elegida, analisis);
+}
+
+function aplicarImportEquipos(nuevos, modo, prev, elegida, analisis){
   var antes=DB.equipos.length;
   if(modo==="reemplazar"){
     DB.equipos=nuevos;
@@ -1732,12 +1767,31 @@ function aplicarImportEquipos(nuevos, modo, nCols, prev){
   derivarServicios();
   guardarDB();
   var ahora=DB.equipos.length;
+
+  // Selector para reimportar desde otra hoja (si hay varias candidatas)
+  var selector="";
+  if(analisis.length>1){
+    var opts=analisis.slice().sort(function(a,b){return b.dataRows-a.dataRows;}).map(function(a){
+      return '<option value="'+esc(a.nombre)+'"'+(a.nombre===elegida.nombre?' selected':'')+'>'+
+        esc(a.nombre)+' — '+a.dataRows+' equipos</option>';
+    }).join("");
+    selector='<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+
+      '<span>¿Hoja equivocada? Importar desde:</span>'+
+      '<select id="selHoja" style="padding:6px 9px;border:1px solid var(--border-strong);border-radius:7px">'+opts+'</select></div>';
+  }
+
   prev.innerHTML='<div class="preview-box" style="border-color:var(--ok-bd)">'+
-    '<b>Importación correcta.</b> '+nuevos.length+' equipos procesados ('+nCols+' columnas mapeadas).<br>'+
-    'Total en la base: <b>'+ahora+'</b> equipos'+(modo==="complementar"?(' (antes '+antes+')'):'')+'. '+
-    'Servicios clínicos detectados: <b>'+DB.catalogos.servicios.length+'</b>.</div>';
+    '<b>Importación correcta.</b><br>'+
+    'Hoja usada: <b>'+esc(elegida.nombre)+'</b> (encabezados en la fila '+(elegida.hdr+1)+').<br>'+
+    nuevos.length+' equipos procesados · '+elegida.mapped+' columnas mapeadas.<br>'+
+    'Total en la base: <b>'+ahora+'</b> equipos'+(modo==="complementar"?(' (antes '+antes+')'):'')+'.<br>'+
+    'Servicios clínicos detectados: <b>'+DB.catalogos.servicios.length+'</b>.'+selector+'</div>';
+
+  var sel=document.getElementById("selHoja");
+  if(sel) sel.addEventListener("change",function(){ procesarHojas(prev, sel.value); });
+
   pintarNav("datos");
-  toast(nuevos.length+" equipos importados.","ok");
+  toast(nuevos.length+" equipos importados desde «"+elegida.nombre+"».","ok");
 }
 
 /* --- Parser CSV robusto (detecta delimitador , ; o tab; respeta comillas) --- */
@@ -1765,21 +1819,21 @@ function parseCSV(text){
   return filas;
 }
 
-/* --- Lector de XLSX 100% offline ---------------------------------------------
-   Un .xlsx es un ZIP con XML adentro. Para leerlo sin librerías externas:
+/* --- Lector de XLSX/XLSM 100% offline ----------------------------------------
+   Un .xlsx/.xlsm es un ZIP con XML adentro. Para leerlo sin librerías externas:
      1) Se interpreta la estructura ZIP (directorio central) en JS.
      2) Cada entrada se descomprime con la API nativa DecompressionStream
         ('deflate-raw'), disponible en navegadores modernos. Sin red.
-     3) Se parsean sharedStrings.xml y la primera hoja con expresiones regulares.
-   Si el navegador no soporta DecompressionStream, se informa y se sugiere CSV.
+     3) Se parsean sharedStrings.xml y TODAS las hojas (en el orden del libro),
+        con expresiones regulares.
+   Devuelve [{nombre, filas}] por hoja. Si el navegador no soporta
+   DecompressionStream, se informa y se sugiere CSV.
 -----------------------------------------------------------------------------*/
 function leerXLSX(arrayBuffer){
   return new Promise(function(resolve,reject){
     try{
       var bytes=new Uint8Array(arrayBuffer);
       var entradas=parseZip(bytes);
-      var getEntry=function(nombre){ return entradas[nombre]; };
-
       var desc=function(entry){
         if(!entry) return Promise.resolve(new Uint8Array(0));
         if(entry.method===0) return Promise.resolve(entry.data); // almacenado, sin comprimir
@@ -1791,22 +1845,54 @@ function leerXLSX(arrayBuffer){
       };
       var aTexto=function(u8){ return new TextDecoder("utf-8").decode(u8); };
 
-      // Descomprimir sharedStrings y la primera hoja
-      desc(getEntry("xl/sharedStrings.xml")).then(function(ss){
-        var shared=parseSharedStrings(aTexto(ss));
-        // Nombre de la primera hoja
-        var sheetName="xl/worksheets/sheet1.xml";
-        if(!getEntry(sheetName)){
-          // buscar cualquier hoja
-          for(var k in entradas){ if(/^xl\/worksheets\/sheet.*\.xml$/.test(k)){ sheetName=k; break; } }
-        }
-        desc(getEntry(sheetName)).then(function(sh){
-          var filas=parseSheet(aTexto(sh),shared);
-          resolve(filas);
-        }).catch(reject);
+      desc(entradas["xl/sharedStrings.xml"]).then(function(ssU8){
+        var shared=parseSharedStrings(aTexto(ssU8));
+        return desc(entradas["xl/workbook.xml"]).then(function(wbU8){
+          return desc(entradas["xl/_rels/workbook.xml.rels"]).then(function(relsU8){
+            var orden=ordenHojas(aTexto(wbU8), aTexto(relsU8));
+            if(!orden.length){ // respaldo: cualquier hoja por patrón de nombre de archivo
+              orden=Object.keys(entradas).filter(function(k){return /^xl\/worksheets\/sheet\d+\.xml$/.test(k);})
+                .sort().map(function(k){ return {nombre:k.replace(/^.*\//,"").replace(/\.xml$/,""), file:k}; });
+            }
+            var sheets=[], i=0;
+            (function siguiente(){
+              if(i>=orden.length){ resolve(sheets); return; }
+              var o=orden[i++];
+              desc(entradas[o.file]).then(function(u8){
+                sheets.push({nombre:o.nombre, filas:parseSheet(aTexto(u8), shared)}); siguiente();
+              }).catch(function(){ sheets.push({nombre:o.nombre, filas:[]}); siguiente(); });
+            })();
+          });
+        });
       }).catch(reject);
     }catch(err){ reject(err); }
   });
+}
+
+/* Deriva el orden y nombre de las hojas desde workbook.xml + sus relaciones. */
+function ordenHojas(wbXml, relsXml){
+  var rid2file={}, reR=/<Relationship\b[^>]*?\/?>/g, r;
+  while((r=reR.exec(relsXml))){
+    var tag=r[0];
+    var id=(tag.match(/Id="([^"]+)"/)||[])[1];
+    var tgt=(tag.match(/Target="([^"]+)"/)||[])[1];
+    var type=(tag.match(/Type="([^"]+)"/)||[])[1]||"";
+    if(id && tgt && /worksheet/i.test(type)) rid2file[id]=normTarget(tgt);
+  }
+  var res=[], reS=/<sheet\b[^>]*?\/?>/g, s;
+  while((s=reS.exec(wbXml))){
+    var tag2=s[0];
+    var nombre=decodeXml((tag2.match(/name="([^"]+)"/)||[])[1]||"");
+    var rid=(tag2.match(/r:id="([^"]+)"/)||[])[1];
+    if(rid && rid2file[rid]) res.push({nombre:nombre, file:rid2file[rid]});
+  }
+  return res;
+}
+/* Normaliza el Target de una relación a una ruta dentro del ZIP. */
+function normTarget(t){
+  t=t.replace(/^\.\//,"");
+  if(t.charAt(0)==="/") return t.slice(1);
+  return t.indexOf("xl/")===0 ? t : "xl/"+t;
 }
 
 /** Interpreta la estructura ZIP y devuelve {nombre: {method, data}}. */

@@ -39,7 +39,9 @@ servicio técnico y bajas).
   fechas.
 - **Validaciones**: Folio SIGEM único y obligatorio, campos clave obligatorios,
   selector de fecha, y preservación de ceros a la izquierda en Inventario y Serie.
-- **Importar equipos** (Excel/CSV) y **respaldo/restauración** completa en JSON.
+- **Importar equipos** (`.xlsx`, `.xlsm` o `.csv`) con **detección automática de la
+  hoja y de la fila de encabezados** (las planillas reales traen títulos y leyendas
+  arriba de la tabla), y **respaldo/restauración** completa en JSON.
 - **Exportar a Excel** (`.xlsx`) cada módulo y el Tablero.
 - Interfaz en **español (Chile)**, responsive (escritorio/tablet) y accesible por
   teclado.
@@ -64,13 +66,19 @@ servicio técnico y bajas).
   declarativa (campos, tipos, columnas) en el objeto `ENTIDADES`, de modo que un
   único motor genérico renderiza listas, formularios, validaciones y exportaciones.
   Así se evita duplicar código y se mantiene la consistencia.
-- **Lectura de `.xlsx` 100 % offline, sin librerías externas.** Un `.xlsx` es un
-  ZIP con XML adentro. La app interpreta la estructura ZIP en JavaScript y
-  descomprime cada entrada con la API nativa del navegador
-  `DecompressionStream('deflate-raw')`; luego parsea `sharedStrings.xml` y la
-  primera hoja. No se usa SheetJS ni ninguna dependencia, por lo que **funciona sin
-  conexión**. Si un navegador muy antiguo no soporta `DecompressionStream`, la app
-  lo informa y sugiere importar el archivo como CSV.
+- **Lectura de `.xlsx`/`.xlsm` 100 % offline, sin librerías externas.** Un
+  `.xlsx`/`.xlsm` es un ZIP con XML adentro. La app interpreta la estructura ZIP en
+  JavaScript y descomprime cada entrada con la API nativa del navegador
+  `DecompressionStream('deflate-raw')`; luego parsea `sharedStrings.xml` y **todas
+  las hojas** (en el orden del libro). No se usa SheetJS ni ninguna dependencia, por
+  lo que **funciona sin conexión**. Si un navegador muy antiguo no soporta
+  `DecompressionStream`, la app lo informa y sugiere importar el archivo como CSV.
+- **Detección automática de hoja y encabezados.** Como las planillas reales suelen
+  tener títulos, leyendas y logos sobre la tabla, la app busca en cada hoja la fila
+  que contenga a la vez «N° Inventario» y «Equipo», y elige automáticamente la hoja
+  con más equipos (con un selector para cambiar de hoja si fuese necesario). Validado
+  con el libro real del hospital: detecta la hoja `Registro_MP-2026`, encabezados en
+  la fila 7, e importa los 966 equipos conservando el formato del inventario.
 - **Escritura de `.xlsx` sin dependencias.** La exportación genera un XLSX válido
   construyendo el ZIP a mano con entradas *almacenadas* (sin compresión), por lo que
   solo requiere el cálculo de CRC-32 y tampoco depende de librerías.
