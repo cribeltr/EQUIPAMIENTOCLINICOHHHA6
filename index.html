@@ -1,0 +1,2267 @@
+<!DOCTYPE html>
+<html lang="es-CL">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gestión MP 2026 · Mantención Correctiva de Equipamiento Clínico</title>
+<!--
+  ============================================================================
+  SISTEMA DE GESTIÓN MP 2026 · MÓDULO DE MANTENCIÓN CORRECTIVA
+  Aplicación de un solo archivo, autocontenida, sin backend ni paso de build.
+  Funciona offline. Todos los datos se guardan en localStorage del navegador.
+
+  El sistema gira en torno al FOLIO SIGEM: cada caso correctivo es una Orden
+  de Trabajo (OT) identificada por su Folio SIGEM, y ese folio vincula todas
+  las etapas del expediente (terreno, visitas, compras, repuestos, envíos,
+  bajas).
+
+  Estructura del código (ver bloque <script> al final):
+    1.  Utilidades            (fechas, moneda, texto, ids, descargas)
+    2.  Capa de datos         (DB + persistencia en localStorage + semillas)
+    3.  Cálculos del Tablero  (estado actual, días abierto, KPIs)
+    4.  Esquemas de entidades (configuración declarativa de campos/columnas)
+    5.  Enrutador y render     (despacho de vistas)
+    6.  Vistas                (Tablero, listas, formularios, expediente, etc.)
+    7.  Importar / Exportar   (XLSX offline, CSV, respaldo JSON, exportación)
+    8.  Inicialización
+  ============================================================================
+-->
+<style>
+/* ===========================================================================
+   1. SISTEMA DE DISEÑO (variables, tipografía, contraste accesible WCAG AA)
+   =========================================================================== */
+:root{
+  /* Neutros */
+  --bg:#eef2f6;
+  --surface:#ffffff;
+  --surface-2:#f7fafc;
+  --surface-3:#eef3f8;
+  --border:#dbe3ec;
+  --border-strong:#c3cedb;
+  --text:#172a3a;
+  --text-muted:#5a6b7b;
+  --text-soft:#8395a5;
+  /* Marca clínica (teal sobrio) */
+  --primary:#0e7c86;
+  --primary-600:#0b6b74;
+  --primary-700:#085059;
+  --primary-50:#e7f4f5;
+  --primary-100:#cfe9eb;
+  /* Barra lateral (azul pizarra profundo) */
+  --side:#10202e;
+  --side-2:#16303f;
+  --side-text:#c5d4e0;
+  --side-text-dim:#7d93a4;
+  --side-active:#0e7c86;
+  /* Estados */
+  --ok:#15803d;        --ok-bg:#dcfce7;   --ok-bd:#a7e3bc;
+  --danger:#c2261d;    --danger-bg:#fdecea;--danger-bd:#f3b6b1;
+  --warn:#b45309;      --warn-bg:#fdf0d9; --warn-bd:#f0cf95;
+  --info:#1d4ed8;      --info-bg:#e2eaff; --info-bd:#b9c9f7;
+  --neutral:#475569;   --neutral-bg:#e7edf3;--neutral-bd:#cad6e1;
+  /* Sombras / radios */
+  --shadow-sm:0 1px 2px rgba(16,32,46,.06),0 1px 3px rgba(16,32,46,.08);
+  --shadow:0 4px 12px rgba(16,32,46,.10);
+  --shadow-lg:0 12px 32px rgba(16,32,46,.18);
+  --r:10px; --r-sm:7px; --r-lg:14px;
+  --sidebar-w:262px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{
+  font-family:"Segoe UI",system-ui,-apple-system,Roboto,"Helvetica Neue",Arial,sans-serif;
+  font-size:14.5px;line-height:1.5;color:var(--text);background:var(--bg);
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,h4{margin:0;font-weight:650;line-height:1.25;color:var(--text)}
+a{color:var(--primary-600);text-decoration:none}
+a:hover{text-decoration:underline}
+button{font-family:inherit;font-size:inherit}
+:focus-visible{outline:3px solid var(--primary);outline-offset:2px;border-radius:4px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+/* ===========================================================================
+   2. ESTRUCTURA GENERAL (sidebar + main)
+   =========================================================================== */
+.app{display:grid;grid-template-columns:var(--sidebar-w) 1fr;min-height:100vh}
+
+/* --- Barra lateral --- */
+.sidebar{
+  background:linear-gradient(180deg,var(--side) 0%,var(--side-2) 100%);
+  color:var(--side-text);display:flex;flex-direction:column;
+  position:sticky;top:0;height:100vh;overflow-y:auto;z-index:40;
+}
+.brand{display:flex;gap:11px;align-items:center;padding:18px 18px 14px}
+.brand .logo{
+  width:38px;height:38px;flex:0 0 38px;border-radius:9px;
+  background:linear-gradient(135deg,var(--primary) 0%,#13a0ab 100%);
+  display:grid;place-items:center;color:#fff;box-shadow:var(--shadow-sm)
+}
+.brand .logo svg{width:22px;height:22px}
+.brand .t1{font-size:14.5px;font-weight:700;color:#fff;letter-spacing:.2px}
+.brand .t2{font-size:11px;color:var(--side-text-dim);margin-top:1px}
+.nav{padding:6px 10px;flex:1}
+.nav .group-label{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--side-text-dim);
+  padding:14px 12px 6px;font-weight:700}
+.nav a{
+  display:flex;align-items:center;gap:11px;padding:9px 12px;margin:2px 0;border-radius:8px;
+  color:var(--side-text);font-weight:500;font-size:13.7px;cursor:pointer;transition:background .12s,color .12s;
+  text-decoration:none;
+}
+.nav a svg{width:18px;height:18px;flex:0 0 18px;opacity:.85}
+.nav a:hover{background:rgba(255,255,255,.07);color:#fff;text-decoration:none}
+.nav a.active{background:var(--side-active);color:#fff;font-weight:600;box-shadow:var(--shadow-sm)}
+.nav a.active svg{opacity:1}
+.nav a .count{margin-left:auto;background:rgba(255,255,255,.14);color:#fff;font-size:11px;
+  padding:1px 7px;border-radius:20px;font-weight:600}
+.side-foot{padding:12px 16px;border-top:1px solid rgba(255,255,255,.08);font-size:11.5px;color:var(--side-text-dim)}
+.side-foot b{color:var(--side-text)}
+
+/* --- Contenido principal --- */
+.main{display:flex;flex-direction:column;min-width:0}
+.topbar{
+  position:sticky;top:0;z-index:30;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);
+  border-bottom:1px solid var(--border);padding:11px 26px;display:flex;align-items:center;gap:16px;
+}
+.topbar .crumb{font-size:13px;color:var(--text-muted)}
+.topbar .crumb b{color:var(--text)}
+.topbar .spacer{flex:1}
+.quicksearch{position:relative;display:flex;align-items:center}
+.quicksearch svg{position:absolute;left:10px;width:16px;height:16px;color:var(--text-soft)}
+.quicksearch input{
+  width:230px;padding:8px 12px 8px 32px;border:1px solid var(--border-strong);border-radius:20px;
+  background:var(--surface);font-size:13px;
+}
+.quicksearch input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-50)}
+.menu-btn{display:none;background:none;border:1px solid var(--border-strong);border-radius:8px;
+  width:38px;height:38px;cursor:pointer;align-items:center;justify-content:center;color:var(--text)}
+.menu-btn svg{width:20px;height:20px}
+.content{padding:24px 26px 60px;max-width:1320px;width:100%}
+
+/* ===========================================================================
+   3. COMPONENTES
+   =========================================================================== */
+.page-head{display:flex;align-items:flex-end;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+.page-head .titles h1{font-size:21px}
+.page-head .titles p{margin:3px 0 0;color:var(--text-muted);font-size:13px}
+.page-head .actions{margin-left:auto;display:flex;gap:9px;flex-wrap:wrap}
+
+/* Botones */
+.btn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--border-strong);
+  background:var(--surface);color:var(--text);padding:8px 14px;border-radius:8px;cursor:pointer;
+  font-weight:600;font-size:13.3px;transition:all .12s;white-space:nowrap}
+.btn svg{width:16px;height:16px}
+.btn:hover{background:var(--surface-2);border-color:var(--border-strong)}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn.primary:hover{background:var(--primary-600)}
+.btn.danger{background:#fff;border-color:var(--danger-bd);color:var(--danger)}
+.btn.danger:hover{background:var(--danger-bg)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--text-muted)}
+.btn.ghost:hover{background:var(--surface-3);color:var(--text)}
+.btn.sm{padding:5px 10px;font-size:12.3px;border-radius:7px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+
+/* Tarjetas */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--shadow-sm)}
+.card-pad{padding:18px}
+
+/* KPIs */
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:22px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:15px 16px;
+  box-shadow:var(--shadow-sm);position:relative;overflow:hidden}
+.kpi::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--c,var(--primary))}
+.kpi .lab{font-size:12px;color:var(--text-muted);font-weight:600;display:flex;align-items:center;gap:7px}
+.kpi .lab svg{width:15px;height:15px;color:var(--c,var(--primary))}
+.kpi .val{font-size:30px;font-weight:750;margin-top:6px;line-height:1;color:var(--text)}
+.kpi .sub{font-size:11.5px;color:var(--text-soft);margin-top:4px}
+
+/* Barra de filtros */
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px}
+.toolbar .field{display:flex;flex-direction:column;gap:3px}
+.toolbar label{font-size:11px;font-weight:600;color:var(--text-muted)}
+.toolbar input,.toolbar select{padding:7px 10px;border:1px solid var(--border-strong);border-radius:7px;
+  font-size:13px;background:var(--surface);min-width:130px}
+.toolbar .search-wrap{position:relative}
+.toolbar .search-wrap svg{position:absolute;left:9px;top:50%;transform:translateY(-50%);width:15px;height:15px;color:var(--text-soft)}
+.toolbar .search-wrap input{padding-left:30px;min-width:230px}
+.toolbar .grow{flex:1}
+
+/* Tablas */
+.table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  overflow:hidden;box-shadow:var(--shadow-sm)}
+.tbl-scroll{overflow-x:auto}
+table.data{width:100%;border-collapse:collapse;font-size:13.3px}
+table.data th{
+  text-align:left;background:var(--surface-3);color:var(--text-muted);font-weight:650;font-size:11.5px;
+  text-transform:uppercase;letter-spacing:.4px;padding:11px 14px;border-bottom:1px solid var(--border);
+  position:sticky;top:0;white-space:nowrap}
+table.data td{padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
+table.data tbody tr:last-child td{border-bottom:none}
+table.data tbody tr{cursor:default;transition:background .1s}
+table.data tbody tr.clickable{cursor:pointer}
+table.data tbody tr.clickable:hover{background:var(--primary-50)}
+table.data td.num{text-align:right;font-variant-numeric:tabular-nums}
+.folio-link{font-weight:700;color:var(--primary-700);font-variant-numeric:tabular-nums}
+.row-actions{display:flex;gap:4px;justify-content:flex-end}
+.icon-btn{border:1px solid transparent;background:none;width:30px;height:30px;border-radius:7px;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;color:var(--text-muted)}
+.icon-btn svg{width:16px;height:16px}
+.icon-btn:hover{background:var(--surface-3);color:var(--text)}
+.icon-btn.danger:hover{background:var(--danger-bg);color:var(--danger)}
+
+/* Badges / pills */
+.badge{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11.8px;
+  font-weight:650;border:1px solid transparent;white-space:nowrap;line-height:1.4}
+.badge .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge.ok{color:var(--ok);background:var(--ok-bg);border-color:var(--ok-bd)}
+.badge.danger{color:var(--danger);background:var(--danger-bg);border-color:var(--danger-bd)}
+.badge.warn{color:var(--warn);background:var(--warn-bg);border-color:var(--warn-bd)}
+.badge.info{color:var(--info);background:var(--info-bg);border-color:var(--info-bd)}
+.badge.neutral{color:var(--neutral);background:var(--neutral-bg);border-color:var(--neutral-bd)}
+.dias-alerta{color:var(--danger);font-weight:750}
+.dias-alerta::after{content:" ⚠";font-size:11px}
+
+/* Estado vacío */
+.empty{padding:50px 24px;text-align:center;color:var(--text-muted)}
+.empty svg{width:46px;height:46px;color:var(--border-strong);margin-bottom:10px}
+.empty h3{font-size:16px;margin-bottom:5px}
+.empty p{font-size:13.3px;max-width:430px;margin:0 auto 14px}
+
+/* ===========================================================================
+   4. FORMULARIOS
+   =========================================================================== */
+.form-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);
+  box-shadow:var(--shadow-sm);max-width:980px}
+.form-card .fc-head{padding:16px 22px;border-bottom:1px solid var(--border)}
+.form-card .fc-head h2{font-size:17px}
+.form-card .fc-head p{margin:3px 0 0;color:var(--text-muted);font-size:12.5px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:15px 20px;padding:22px}
+.campo{display:flex;flex-direction:column;gap:5px;min-width:0}
+.campo.campo-full{grid-column:1 / -1}
+.campo label{font-size:12.5px;font-weight:650;color:var(--text)}
+.campo .req{color:var(--danger)}
+.campo input,.campo select,.campo textarea{
+  width:100%;padding:9px 11px;border:1px solid var(--border-strong);border-radius:8px;font-size:13.6px;
+  background:var(--surface);color:var(--text);font-family:inherit;transition:border .12s,box-shadow .12s}
+.campo textarea{resize:vertical;min-height:62px}
+.campo input:focus,.campo select:focus,.campo textarea:focus{
+  outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-50)}
+.campo input.auto,.campo input[readonly]{background:var(--surface-3);color:var(--text-muted);cursor:not-allowed}
+.campo{position:relative}
+.auto-tag{position:absolute;right:10px;top:30px;background:var(--neutral-bg);color:var(--neutral);
+  font-size:9.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;padding:1px 6px;border-radius:5px}
+.campo .hint{font-size:11.3px;color:var(--text-soft)}
+.campo .hint-money{font-size:12px;color:var(--primary-700);font-weight:650;min-height:14px}
+.campo.invalido input,.campo.invalido select,.campo.invalido textarea{border-color:var(--danger);background:#fffafa}
+.campo .err-msg{font-size:11.3px;color:var(--danger);font-weight:600}
+.fc-foot{padding:15px 22px;border-top:1px solid var(--border);display:flex;gap:10px;justify-content:flex-end;
+  background:var(--surface-2);border-radius:0 0 var(--r) var(--r)}
+.form-section-title{grid-column:1/-1;font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;
+  color:var(--primary-700);font-weight:700;border-bottom:1px solid var(--border);padding-bottom:5px;margin-top:4px}
+
+/* ===========================================================================
+   5. EXPEDIENTE (línea de tiempo)
+   =========================================================================== */
+.exp-grid{display:grid;grid-template-columns:330px 1fr;gap:20px;align-items:start}
+.exp-summary .card-pad h3{font-size:16px;margin-bottom:2px}
+.exp-summary .inv{color:var(--text-muted);font-size:12.5px;margin-bottom:14px}
+.exp-meta{display:flex;flex-direction:column;gap:0}
+.exp-meta .row{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--border);font-size:13px}
+.exp-meta .row:last-child{border-bottom:none}
+.exp-meta .row .k{color:var(--text-muted)}
+.exp-meta .row .v{font-weight:600;text-align:right}
+.add-stage{display:flex;flex-wrap:wrap;gap:7px;margin:16px 0 6px}
+.timeline{position:relative;padding-left:30px}
+.timeline::before{content:"";position:absolute;left:9px;top:6px;bottom:6px;width:2px;background:var(--border-strong)}
+.tl-item{position:relative;margin-bottom:16px}
+.tl-item::before{content:"";position:absolute;left:-29px;top:4px;width:14px;height:14px;border-radius:50%;
+  background:var(--surface);border:3px solid var(--c,var(--primary));box-shadow:0 0 0 3px var(--surface)}
+.tl-card{background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--c,var(--primary));
+  border-radius:var(--r-sm);padding:13px 16px;box-shadow:var(--shadow-sm)}
+.tl-card .tl-head{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+.tl-card .tl-type{font-weight:700;font-size:13.5px}
+.tl-card .tl-date{font-size:12px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+.tl-card .tl-actions{margin-left:auto;display:flex;gap:3px}
+.tl-fields{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:7px 18px}
+.tl-fields .f{font-size:12.5px;min-width:0}
+.tl-fields .f .k{color:var(--text-soft);font-size:11px;display:block}
+.tl-fields .f .v{color:var(--text);font-weight:550;word-break:break-word}
+
+/* ===========================================================================
+   6. CATÁLOGOS
+   =========================================================================== */
+.cat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.cat-card .ch{padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.cat-card .ch h3{font-size:14px}
+.cat-card .ch .n{margin-left:auto;font-size:11px;color:var(--text-soft);background:var(--surface-3);
+  padding:1px 8px;border-radius:20px;font-weight:600}
+.cat-card .lock{font-size:10px;color:var(--text-soft);font-style:italic}
+.cat-items{padding:8px 10px;max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:3px}
+.cat-row{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:7px}
+.cat-row:hover{background:var(--surface-2)}
+.cat-row .nm{flex:1;font-size:13px;min-width:0;word-break:break-word}
+.cat-add{display:flex;gap:7px;padding:11px 14px;border-top:1px solid var(--border)}
+.cat-add input{flex:1;padding:7px 10px;border:1px solid var(--border-strong);border-radius:7px;font-size:13px}
+
+/* ===========================================================================
+   7. DATOS (importar / exportar)
+   =========================================================================== */
+.data-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:18px}
+.data-card h3{font-size:15px;display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.data-card h3 svg{width:18px;height:18px;color:var(--primary)}
+.data-card p{font-size:12.8px;color:var(--text-muted);margin:0 0 14px}
+.radio-row{display:flex;gap:16px;margin:10px 0}
+.radio-row label{display:flex;gap:6px;align-items:center;font-size:13px;cursor:pointer}
+.dropzone{border:2px dashed var(--border-strong);border-radius:var(--r);padding:18px;text-align:center;
+  color:var(--text-muted);font-size:13px;cursor:pointer;transition:all .12s;background:var(--surface-2)}
+.dropzone:hover,.dropzone.drag{border-color:var(--primary);background:var(--primary-50);color:var(--primary-700)}
+.dropzone svg{width:30px;height:30px;color:var(--text-soft);margin-bottom:6px}
+.preview-box{margin-top:12px;font-size:12.5px;background:var(--surface-2);border:1px solid var(--border);
+  border-radius:8px;padding:10px 12px;color:var(--text-muted);max-height:170px;overflow:auto}
+.preview-box b{color:var(--text)}
+
+/* ===========================================================================
+   8. MODAL + TOAST + PAGINACIÓN
+   =========================================================================== */
+.modal-backdrop{position:fixed;inset:0;background:rgba(16,32,46,.45);display:grid;place-items:center;z-index:90;padding:20px}
+.modal{background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--shadow-lg);max-width:460px;width:100%;
+  overflow:hidden;animation:pop .14s ease-out}
+@keyframes pop{from{transform:scale(.96);opacity:0}to{transform:scale(1);opacity:1}}
+.modal .m-body{padding:22px 24px}
+.modal .m-body h3{font-size:17px;margin-bottom:7px;display:flex;align-items:center;gap:9px}
+.modal .m-body h3 svg{width:22px;height:22px}
+.modal .m-body p{color:var(--text-muted);font-size:13.5px;margin:0}
+.modal .m-foot{padding:14px 24px;background:var(--surface-2);display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--border)}
+.toast-root{position:fixed;bottom:22px;right:22px;z-index:120;display:flex;flex-direction:column;gap:9px}
+.toast{background:var(--side);color:#fff;padding:12px 16px;border-radius:9px;box-shadow:var(--shadow-lg);
+  font-size:13.4px;font-weight:550;display:flex;align-items:center;gap:10px;max-width:380px;animation:slidein .2s ease-out}
+.toast svg{width:18px;height:18px;flex:0 0 18px}
+.toast.ok{border-left:4px solid #34d399}
+.toast.error{border-left:4px solid #f87171}
+.toast.info{border-left:4px solid #60a5fa}
+@keyframes slidein{from{transform:translateX(30px);opacity:0}to{transform:translateX(0);opacity:1}}
+.pager{display:flex;align-items:center;gap:12px;justify-content:flex-end;padding:12px 14px;font-size:13px;color:var(--text-muted)}
+.pager .btn{padding:5px 11px}
+
+/* ===========================================================================
+   9. RESPONSIVE
+   =========================================================================== */
+@media(max-width:1150px){.kpis{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:1000px){.exp-grid{grid-template-columns:1fr}}
+@media(max-width:900px){
+  .app{grid-template-columns:1fr}
+  .sidebar{position:fixed;left:0;top:0;width:280px;transform:translateX(-100%);transition:transform .22s ease;box-shadow:var(--shadow-lg)}
+  .app.sidebar-open .sidebar{transform:translateX(0)}
+  .app.sidebar-open::after{content:"";position:fixed;inset:0;background:rgba(16,32,46,.4);z-index:35}
+  .menu-btn{display:inline-flex}
+  .form-grid{grid-template-columns:1fr}
+  .content{padding:18px 16px 50px}
+  .topbar{padding:10px 16px}
+  .quicksearch input{width:150px}
+}
+@media(max-width:620px){
+  .kpis{grid-template-columns:repeat(2,1fr)}
+  .quicksearch{display:none}
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <!-- ===================== BARRA LATERAL ===================== -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6v4h4v6h-4v4H9v-4H5V7h4z" fill="rgba(255,255,255,.18)"/><path d="M12 8v8M8 12h8"/></svg>
+      </div>
+      <div>
+        <div class="t1">Gestión MP 2026</div>
+        <div class="t2">Mantención Correctiva</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav" aria-label="Navegación principal"></nav>
+    <div class="side-foot" id="sideFoot"></div>
+  </aside>
+
+  <!-- ===================== CONTENIDO ===================== -->
+  <div class="main">
+    <header class="topbar">
+      <button class="menu-btn" data-action="toggle-sidebar" aria-label="Abrir menú">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+      <div class="crumb" id="crumb"></div>
+      <div class="spacer"></div>
+      <div class="quicksearch">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input type="search" id="quickSearch" placeholder="Ir a Folio SIGEM…" aria-label="Buscar Folio SIGEM" autocomplete="off">
+      </div>
+    </header>
+    <div class="content" id="view" role="main"></div>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div class="toast-root" id="toast-root" aria-live="polite"></div>
+
+<script>
+/* ===========================================================================
+   1. UTILIDADES
+   =========================================================================== */
+"use strict";
+
+/** Escapa texto para insertarlo de forma segura en HTML. */
+function esc(s){
+  return String(s==null?"":s).replace(/[&<>"']/g,function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];
+  });
+}
+
+/** Normaliza texto: minúsculas, sin acentos ni símbolos (para comparar/mapear). */
+function norm(s){
+  return String(s==null?"":s).toLowerCase().normalize("NFD")
+    .replace(/[̀-ͯ]/g,"").replace(/[°º]/g,"")
+    .replace(/[^a-z0-9]+/g," ").trim();
+}
+
+/** Genera un identificador interno único para cada registro. */
+function nuevoId(){
+  DB.meta.seq = (DB.meta.seq||0)+1;
+  return "r"+DB.meta.seq.toString(36)+Date.now().toString(36).slice(-4);
+}
+
+/* --- Fechas: se almacenan en ISO (aaaa-mm-dd) y se muestran en dd-mm-aaaa --- */
+
+/** Convierte "aaaa-mm-dd" a un Date local (evita corrimientos por zona horaria). */
+function parseISO(iso){
+  if(!iso) return null;
+  var p = String(iso).split("-");
+  if(p.length!==3) return null;
+  var d = new Date(+p[0], (+p[1])-1, +p[2]);
+  return isNaN(d.getTime()) ? null : d;
+}
+/** Formatea "aaaa-mm-dd" -> "dd-mm-aaaa" para mostrar en pantalla. */
+function fmtFecha(iso){
+  if(!iso) return "";
+  var p = String(iso).split("-");
+  if(p.length!==3) return esc(iso);
+  return p[2]+"-"+p[1]+"-"+p[0];
+}
+/** Fecha de hoy a medianoche local. */
+function hoy0(){ var d=new Date(); return new Date(d.getFullYear(),d.getMonth(),d.getDate()); }
+/** Días transcurridos entre una fecha ISO y hoy. */
+function diasDesde(iso){
+  var d = parseISO(iso); if(!d) return null;
+  return Math.floor((hoy0() - d)/86400000);
+}
+
+/** Formatea un número como moneda chilena (CLP, sin decimales). */
+function fmtCLP(v){
+  if(v===""||v==null) return "";
+  var n = Number(v);
+  if(isNaN(n)) return "";
+  return new Intl.NumberFormat("es-CL",{style:"currency",currency:"CLP",maximumFractionDigits:0}).format(n);
+}
+
+/** Dispara la descarga de un Blob/contenido con un nombre de archivo. */
+function descargar(nombre, blob){
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url; a.download = nombre;
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+}
+
+/** Sello de fecha-hora compacto para nombres de archivo. */
+function sello(){
+  var d=new Date(), p=function(n){return String(n).padStart(2,"0");};
+  return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes());
+}
+
+/* ===========================================================================
+   2. CAPA DE DATOS  (DB en memoria + persistencia en localStorage)
+   =========================================================================== */
+var STORAGE_KEY = "mp2026_correctivo_v1";
+
+/* Estructura de la base de datos. Cada arreglo es una "tabla". El Folio SIGEM
+   es la clave que vincula las etapas a su Orden de Trabajo. */
+var DB = {
+  equipos:   [],   // datos maestros (importados)
+  ordenes:   [],   // Órdenes de Trabajo (dueñas del Folio SIGEM)
+  terreno:   [],   // Reparación en Terreno
+  visitas:   [],   // Visitas Técnicas
+  compras:   [],   // Línea de Compra
+  repuestos: [],   // Repuestos
+  envios:    [],   // Servicio Técnico (Envíos)
+  bajas:     [],   // Bajas
+  catalogos: {},   // listas para desplegables
+  meta:      { seq:0 }
+};
+
+/* Índice auxiliar: N° Inventario -> equipo (se reconstruye al cargar/importar). */
+var equiposPorInventario = {};
+
+/** Catálogos por defecto (semilla). Se pueden editar desde la sección Catálogos. */
+function catalogosSemilla(){
+  return {
+    tecnicos:[
+      "Carlos Bahamondes Seguel","Cristián Beltrán Oviedo","Cristina Rozas Urrutia",
+      "Daniel Díaz Neira","Ignacio Berner Bergara","Macarena Toledo","Marco Ulloa",
+      "Matías Soazo Garrido","Ricardo Matus Aroca","Tito Millapán Riquelme","Personal Externo"
+    ],
+    estadoEquipo:["Operativo","No Operativo","Servicio Técnico"],
+    tipoCompra:["Trato Directo","Compra Ágil"],
+    resultadoVisita:["Reparó","No reparó (necesita repuestos)"],
+    estadoEvento:["Abierto","Cerrado"],
+    decisionReevaluacion:["Repuestos","Nueva visita","Reenvío","Baja"],
+    empresas:["DRAGER"],
+    servicios:[]   // se auto-derivan del campo "Servicio" de los equipos importados
+  };
+}
+
+/** Carga la base de datos desde localStorage (o inicializa con semillas). */
+function cargarDB(){
+  try{
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if(raw){
+      var d = JSON.parse(raw);
+      DB.equipos   = d.equipos   || [];
+      DB.ordenes   = d.ordenes   || [];
+      DB.terreno   = d.terreno   || [];
+      DB.visitas   = d.visitas   || [];
+      DB.compras   = d.compras   || [];
+      DB.repuestos = d.repuestos || [];
+      DB.envios    = d.envios    || [];
+      DB.bajas     = d.bajas     || [];
+      DB.catalogos = Object.assign(catalogosSemilla(), d.catalogos||{});
+      DB.meta      = d.meta      || {seq:0};
+    }else{
+      DB.catalogos = catalogosSemilla();
+    }
+  }catch(e){
+    console.error("No se pudo leer el almacenamiento local:",e);
+    DB.catalogos = catalogosSemilla();
+  }
+  reindexarEquipos();
+}
+
+/** Guarda toda la base de datos en localStorage (autoguardado). */
+function guardarDB(){
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(DB));
+  }catch(e){
+    console.error(e);
+    toast("No se pudo guardar (almacenamiento lleno o no disponible).","error");
+  }
+}
+
+/** Reconstruye el índice de equipos por N° Inventario. */
+function reindexarEquipos(){
+  equiposPorInventario = {};
+  DB.equipos.forEach(function(e){
+    if(e.inventario!=null && e.inventario!=="" && !(e.inventario in equiposPorInventario)){
+      equiposPorInventario[String(e.inventario)] = e;
+    }
+  });
+}
+
+/** Deriva los servicios clínicos únicos desde los equipos y los suma al catálogo. */
+function derivarServicios(){
+  var set = {};
+  DB.catalogos.servicios.forEach(function(s){ set[s]=true; });
+  DB.equipos.forEach(function(e){
+    var s=(e.servicio||"").trim();
+    if(s) set[s]=true;
+  });
+  DB.catalogos.servicios = Object.keys(set).sort(function(a,b){return a.localeCompare(b,"es");});
+}
+
+/* ===========================================================================
+   3. CÁLCULOS DEL TABLERO  (reglas de negocio, sección 5 del documento)
+   =========================================================================== */
+
+/**
+ * Estado actual de un caso (Folio SIGEM):
+ *   1) Si aparece en Bajas                              -> "Baja"
+ *   2) Si tiene un envío a serv. técnico sin retorno    -> "Servicio Técnico"
+ *   3) En cualquier otro caso                           -> Estado inicial de la OT
+ */
+function estadoActual(folio){
+  if(DB.bajas.some(function(b){return b.folio===folio;})) return "Baja";
+  if(DB.envios.some(function(e){return e.folio===folio && !String(e.fechaRetorno||"").trim();})) return "Servicio Técnico";
+  var ot = DB.ordenes.find(function(o){return o.folio===folio;});
+  return ot ? (ot.estadoInicial||"") : "";
+}
+
+/** Cuenta de registros vinculados a un folio en todas las etapas. */
+function vinculadosCount(folio){
+  return ["terreno","visitas","compras","repuestos","envios","bajas"].reduce(function(acc,k){
+    return acc + DB[k].filter(function(r){return r.folio===folio;}).length;
+  },0);
+}
+
+/** Calcula los KPIs del Tablero a partir de las Órdenes de Trabajo. */
+function calcularKPIs(){
+  var k={abiertos:0,noOperativos:0,servicioTecnico:0,bajas:0,cerrados:0};
+  DB.ordenes.forEach(function(o){
+    var ev=o.estadoEvento, est=estadoActual(o.folio);
+    if(ev==="Abierto") k.abiertos++;
+    if(ev==="Cerrado") k.cerrados++;
+    if(est==="No Operativo") k.noOperativos++;
+    if(est==="Servicio Técnico") k.servicioTecnico++;
+    if(est==="Baja") k.bajas++;
+  });
+  return k;
+}
+
+/** Devuelve la clase de badge según el estado del equipo. */
+function claseEstado(est){
+  return ({"Operativo":"ok","No Operativo":"danger","Servicio Técnico":"warn","Baja":"neutral"})[est] || "info";
+}
+
+/* ===========================================================================
+   4. ESQUEMAS DE ENTIDADES (configuración declarativa)
+   Define, para cada módulo: campos del formulario, columnas de la lista, etc.
+   Tipos de campo: text, textarea, date, number, currency, select (catalog u
+   options), boolean (Sí/No), folioRef (selector de OT), inventario, auto.
+   =========================================================================== */
+var ENTIDADES = {
+  ot:{
+    titulo:"Órdenes de Trabajo", singular:"Orden de Trabajo", store:"ordenes", esOT:true,
+    intro:"Apertura del caso correctivo. El Folio SIGEM es la clave única que vincula todo el expediente.",
+    campos:[
+      {sec:"Identificación del caso"},
+      {name:"folio", label:"Folio SIGEM", type:"text", required:true, lockOnEdit:true, ph:"Ej.: 123456"},
+      {name:"fechaOT", label:"Fecha OT", type:"date", required:true},
+      {name:"tecnico", label:"Técnico asignado", type:"select", catalog:"tecnicos", required:true},
+      {name:"estadoEvento", label:"Estado del evento", type:"select", catalog:"estadoEvento", required:true, def:"Abierto"},
+      {sec:"Equipo afectado"},
+      {name:"inventario", label:"N° Inventario", type:"inventario", required:true, hint:"Al ingresarlo se autocompletan Equipo, N° Serie y Servicio."},
+      {name:"equipo", label:"Equipo", type:"auto"},
+      {name:"serie", label:"N° Serie", type:"auto"},
+      {name:"servicio", label:"Servicio", type:"auto"},
+      {name:"estadoInicial", label:"Estado inicial", type:"select", catalog:"estadoEquipo", required:true},
+      {sec:"Detalle"},
+      {name:"requerimiento", label:"Requerimiento", type:"textarea", required:true, ph:"Falla reportada / solicitud…"},
+      {name:"fechaCierre", label:"Fecha cierre OT", type:"date"}
+    ],
+    cols:[
+      {k:"folio",label:"Folio SIGEM",folio:true},
+      {k:"equipo",label:"Equipo"},
+      {k:"servicio",label:"Servicio"},
+      {k:"estadoActual",label:"Estado actual",badge:"estado"},
+      {k:"tecnico",label:"Técnico"},
+      {k:"fechaOT",label:"Fecha OT",date:true},
+      {k:"estadoEvento",label:"Evento",badge:"evento"}
+    ]
+  },
+  terreno:{
+    titulo:"Reparación en Terreno", singular:"Reparación en Terreno", store:"terreno",
+    intro:"Arreglo resuelto al primer intento, en el lugar.",
+    campos:[
+      {name:"folio", label:"Folio SIGEM", type:"folioRef", required:true},
+      {name:"fecha", label:"Fecha reparación / cierre", type:"date", required:true},
+      {name:"estadoFinal", label:"Estado final equipo", type:"select", catalog:"estadoEquipo", required:true},
+      {name:"descripcion", label:"Descripción tarea", type:"textarea", required:true, full:true}
+    ],
+    cols:[
+      {k:"folio",label:"Folio SIGEM",folio:true},{k:"equipoCalc",label:"Equipo"},
+      {k:"fecha",label:"Fecha",date:true},{k:"estadoFinal",label:"Estado final",badge:"estado"},
+      {k:"descripcion",label:"Descripción"}
+    ]
+  },
+  visitas:{
+    titulo:"Visitas Técnicas", singular:"Visita Técnica", store:"visitas",
+    intro:"Intervención de un especialista externo. Una misma OT puede tener varias visitas.",
+    campos:[
+      {name:"folio", label:"Folio SIGEM", type:"folioRef", required:true},
+      {name:"fechaVisita", label:"Fecha visita", type:"date", required:true},
+      {name:"proveedor", label:"Proveedor / empresa", type:"select", catalog:"empresas", required:true},
+      {name:"ingenieroExterno", label:"Ingeniero externo", type:"text"},
+      {name:"reparo", label:"¿Reparó?", type:"select", catalog:"resultadoVisita"},
+      {name:"estadoFinal", label:"Estado final", type:"select", catalog:"estadoEquipo"},
+      {name:"nReporte", label:"N° Reporte Servicio", type:"text"},
+      {name:"fechaReporte", label:"Fecha reporte", type:"date"},
+      {name:"archivado", label:"Archivado carpeta (Cristián)", type:"boolean"},
+      {name:"fechaCierre", label:"Fecha cierre", type:"date"},
+      {name:"descripcion", label:"Descripción tarea", type:"textarea", full:true}
+    ],
+    cols:[
+      {k:"folio",label:"Folio SIGEM",folio:true},{k:"equipoCalc",label:"Equipo"},
+      {k:"fechaVisita",label:"Fecha visita",date:true},{k:"proveedor",label:"Proveedor"},
+      {k:"reparo",label:"¿Reparó?"},{k:"estadoFinal",label:"Estado final",badge:"estado"}
+    ]
+  },
+  compras:{
+    titulo:"Línea de Compra", singular:"Línea de Compra", store:"compras",
+    intro:"Cotización y orden de compra. Compartida por las rutas de repuestos, visita y servicio técnico.",
+    campos:[
+      {name:"folio", label:"Folio SIGEM", type:"folioRef", required:true},
+      {name:"ruta", label:"Ruta asociada", type:"select", options:["Repuestos","Visita","Servicio Técnico"], required:true},
+      {sec:"Cotización"},
+      {name:"fechaCotizacion", label:"Fecha cotización", type:"date"},
+      {name:"proveedorCotizado", label:"Proveedor cotizado", type:"select", catalog:"empresas"},
+      {name:"nCotizacion", label:"N° cotización", type:"text"},
+      {name:"montoCotizado", label:"Monto cotizado", type:"currency"},
+      {name:"tipoCompra", label:"Tipo de compra", type:"select", catalog:"tipoCompra"},
+      {sec:"Informe técnico"},
+      {name:"nInformeTecnico", label:"N° Informe Técnico", type:"text"},
+      {name:"fechaInforme", label:"Fecha informe", type:"date"},
+      {name:"responsableInforme", label:"Responsable informe", type:"select", catalog:"tecnicos"},
+      {sec:"Orden de compra"},
+      {name:"nOC", label:"N° OC", type:"text"},
+      {name:"fechaEmisionOC", label:"Fecha emisión OC", type:"date"},
+      {name:"fechaEnvioProveedor", label:"Fecha envío a proveedor", type:"date"},
+      {name:"descripcionOC", label:"Descripción OC", type:"textarea", full:true}
+    ],
+    cols:[
+      {k:"folio",label:"Folio SIGEM",folio:true},{k:"equipoCalc",label:"Equipo"},
+      {k:"ruta",label:"Ruta"},{k:"fechaCotizacion",label:"Fecha cot.",date:true},
+      {k:"proveedorCotizado",label:"Proveedor"},{k:"montoCotizado",label:"Monto",money:true},
+      {k:"nOC",label:"N° OC"}
+    ]
+  },
+  repuestos:{
+    titulo:"Repuestos", singular:"Repuesto / cierre", store:"repuestos",
+    intro:"Cierre de la ruta de repuestos una vez instalados.",
+    campos:[
+      {name:"folio", label:"Folio SIGEM", type:"folioRef", required:true},
+      {name:"fecha", label:"Fecha reparación", type:"date", required:true},
+      {name:"estadoFinal", label:"Estado final equipo", type:"select", catalog:"estadoEquipo", required:true},
+      {name:"descripcion", label:"Descripción tarea", type:"textarea", required:true, full:true}
+    ],
+    cols:[
+      {k:"folio",label:"Folio SIGEM",folio:true},{k:"equipoCalc",label:"Equipo"},
+      {k:"fecha",label:"Fecha",date:true},{k:"estadoFinal",label:"Estado final",badge:"estado"},
+      {k:"descripcion",label:"Descripción"}
+    ]
+  },
+  envios:{
+    titulo:"Servicio Técnico (Envíos)", singular:"Envío a Servicio Técnico", store:"envios",
+    intro:"Envío del equipo a servicio técnico externo. Una OT puede tener varios envíos.",
+    campos:[
+      {name:"folio", label:"Folio SIGEM", type:"folioRef", required:true},
+      {name:"nHojaEnvio", label:"N° Hoja de Envío", type:"text"},
+      {name:"responsableEnvia", label:"Responsable que envía", type:"select", catalog:"tecnicos"},
+      {name:"fechaEnvio", label:"Fecha envío", type:"date", required:true},
+      {name:"empresaDestino", label:"Empresa destino", type:"select", catalog:"empresas", required:true},
+      {sec:"Reporte del servicio"},
+      {name:"nReporte", label:"N° Reporte Servicio", type:"text"},
+      {name:"fechaReporte", label:"Fecha reporte", type:"date"},
+      {name:"archivado", label:"Archivado carpeta (Cristián)", type:"boolean"},
+      {sec:"Retorno"},
+      {name:"fechaRetorno", label:"Fecha retorno", type:"date", hint:"Sin retorno = el caso figura En Servicio Técnico."},
+      {name:"folioGuia", label:"Folio guía despacho", type:"text"},
+      {name:"estadoRetorno", label:"Estado al retorno", type:"select", catalog:"estadoEquipo"},
+      {name:"decisionNoOperativo", label:"Decisión si No Operativo", type:"select", catalog:"decisionReevaluacion"}
+    ],
+    cols:[
+      {k:"folio",label:"Folio SIGEM",folio:true},{k:"equipoCalc",label:"Equipo"},
+      {k:"fechaEnvio",label:"Fecha envío",date:true},{k:"empresaDestino",label:"Destino"},
+      {k:"fechaRetorno",label:"Retorno",date:true},{k:"estadoRetorno",label:"Estado retorno",badge:"estado"}
+    ]
+  },
+  bajas:{
+    titulo:"Bajas", singular:"Baja", store:"bajas",
+    intro:"Equipos dados de baja definitiva.",
+    campos:[
+      {name:"folio", label:"Folio SIGEM", type:"folioRef", required:true},
+      {name:"folioDocBaja", label:"Folio documento de baja", type:"text"},
+      {name:"responsableInterno", label:"Responsable interno", type:"select", catalog:"tecnicos"},
+      {name:"fechaBaja", label:"Fecha baja", type:"date", required:true},
+      {name:"motivo", label:"Motivo", type:"textarea", required:true, full:true}
+    ],
+    cols:[
+      {k:"folio",label:"Folio SIGEM",folio:true},{k:"equipoCalc",label:"Equipo"},
+      {k:"folioDocBaja",label:"Doc. baja"},{k:"fechaBaja",label:"Fecha baja",date:true},
+      {k:"motivo",label:"Motivo"}
+    ]
+  }
+};
+
+/* Definición de columnas para la tabla de Equipos (datos maestros). */
+var COLS_EQUIPO = [
+  {k:"inventario",label:"N° Inventario",mono:true},
+  {k:"equipo",label:"Equipo"},
+  {k:"marca",label:"Marca"},
+  {k:"modelo",label:"Modelo"},
+  {k:"serie",label:"Serie",mono:true},
+  {k:"servicio",label:"Servicio"},
+  {k:"ubicacion",label:"Ubicación"},
+  {k:"clasificacion",label:"Clasif."}
+];
+/* Campos del maestro de equipos (canónicos) y etiquetas para mapeo de columnas. */
+var CAMPOS_EQUIPO = ["id","nCarpeta","inventario","equipo","servicio","unidad","ubicacion",
+  "procedencia","marca","modelo","serie","anioInstalacion","clasificacion"];
+var ETIQUETA_EQUIPO = {
+  id:"ID", nCarpeta:"N° Carpeta", inventario:"N° Inventario", equipo:"Equipo", servicio:"Servicio",
+  unidad:"Unidad", ubicacion:"Ubicación", procedencia:"Procedencia", marca:"Marca", modelo:"Modelo",
+  serie:"Serie", anioInstalacion:"Año Instalación", clasificacion:"Clasificación"
+};
+
+/* ===========================================================================
+   5. ICONOS (SVG inline, sin dependencias externas)
+   =========================================================================== */
+function ic(n){
+  var p={
+    tablero:'<rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/>',
+    ot:'<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>',
+    terreno:'<path d="M14.7 6.3a4 4 0 0 0-5.2 5.2L4 17v3h3l5.5-5.5a4 4 0 0 0 5.2-5.2l-2.6 2.6-2-2 2.6-2.6z"/>',
+    visitas:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/>',
+    compras:'<circle cx="9" cy="20" r="1.5"/><circle cx="18" cy="20" r="1.5"/><path d="M2 3h3l2.4 12.4a1.5 1.5 0 0 0 1.5 1.2h8.8a1.5 1.5 0 0 0 1.5-1.2L23 7H6"/>',
+    repuestos:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 0 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 14.5H3a2 2 0 0 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 9 4.6h.1A1.6 1.6 0 0 0 10.5 3V3a2 2 0 0 1 4 0v.1A1.6 1.6 0 0 0 16 4.6a1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.6 1.6 0 0 0 21 9.5"/>',
+    envios:'<rect x="1" y="3" width="15" height="13" rx="1.5"/><path d="M16 8h4l3 3v5h-7z"/><circle cx="5.5" cy="18.5" r="1.8"/><circle cx="18.5" cy="18.5" r="1.8"/>',
+    bajas:'<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6"/>',
+    equipos:'<rect x="4" y="4" width="16" height="12" rx="2"/><path d="M2 20h20M9 16v4M15 16v4M8 9h2M8 12h6"/>',
+    catalogos:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+    datos:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V3"/>',
+    expediente:'<path d="M9 2h6a2 2 0 0 1 2 2v2h2a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h2V4a2 2 0 0 1 2-2z"/><path d="M9 12h6M9 16h6"/>'
+  };
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+(p[n]||"")+'</svg>';
+}
+var ICON_KPI={
+  abiertos:'<path d="M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+  no:'<circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/>',
+  st:ic, // placeholder, no usado
+  baja:'<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>',
+  cerr:'<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'
+};
+
+/* ===========================================================================
+   6. NAVEGACIÓN LATERAL
+   =========================================================================== */
+var NAV=[
+  {k:"tablero", label:"Tablero"},
+  {grupo:"Expediente"},
+  {k:"ot", label:"Órdenes de Trabajo"},
+  {k:"terreno", label:"Reparación en Terreno"},
+  {k:"visitas", label:"Visitas Técnicas"},
+  {k:"compras", label:"Línea de Compra"},
+  {k:"repuestos", label:"Repuestos"},
+  {k:"envios", label:"Servicio Técnico (Envíos)"},
+  {k:"bajas", label:"Bajas"},
+  {grupo:"Administración"},
+  {k:"equipos", label:"Equipos"},
+  {k:"catalogos", label:"Catálogos"},
+  {k:"datos", label:"Importar / Exportar"}
+];
+
+/** Dibuja la barra lateral y marca la sección activa. */
+function pintarNav(activo){
+  var cont=[]; var counts={
+    ot:DB.ordenes.length, terreno:DB.terreno.length, visitas:DB.visitas.length,
+    compras:DB.compras.length, repuestos:DB.repuestos.length, envios:DB.envios.length,
+    bajas:DB.bajas.length, equipos:DB.equipos.length
+  };
+  NAV.forEach(function(n){
+    if(n.grupo){ cont.push('<div class="group-label">'+esc(n.grupo)+'</div>'); return; }
+    var cnt = counts[n.k]!=null ? '<span class="count">'+counts[n.k]+'</span>' : "";
+    cont.push('<a href="#'+n.k+'" data-nav="'+n.k+'"'+(n.k===activo?' class="active" aria-current="page"':'')+'>'+ic(n.k)+'<span>'+esc(n.label)+'</span>'+cnt+'</a>');
+  });
+  document.getElementById("nav").innerHTML=cont.join("");
+  var totalCasos=DB.ordenes.length;
+  document.getElementById("sideFoot").innerHTML=
+    '<div><b>'+DB.equipos.length+'</b> equipos · <b>'+totalCasos+'</b> casos</div>'+
+    '<div style="margin-top:3px">Datos guardados localmente</div>';
+}
+
+/* ===========================================================================
+   7. ENRUTADOR
+   =========================================================================== */
+function router(){
+  cerrarSidebar();
+  var hash=(location.hash||"#tablero").replace(/^#/,"");
+  var parts=hash.split("/").map(decodeURIComponent);
+  var vista=parts[0]||"tablero";
+  var view=document.getElementById("view");
+  window.scrollTo(0,0);
+
+  // Migas de pan
+  setCrumb(vista, parts);
+
+  if(vista==="tablero"){ pintarNav("tablero"); renderTablero(); }
+  else if(vista==="expediente"){ pintarNav(""); renderExpediente(parts[1]); }
+  else if(vista==="equipos"){ pintarNav("equipos"); renderEquipos(); }
+  else if(vista==="catalogos"){ pintarNav("catalogos"); renderCatalogos(); }
+  else if(vista==="datos"){ pintarNav("datos"); renderDatos(); }
+  else if(ENTIDADES[vista]){
+    pintarNav(vista);
+    if(parts[1]==="nuevo") renderFormulario(vista, null, parts[2]||"");
+    else if(parts[1]==="editar") renderFormulario(vista, parts[2]);
+    else renderLista(vista);
+  }
+  else { location.hash="#tablero"; }
+}
+
+function setCrumb(vista, parts){
+  var nombres={tablero:"Tablero",equipos:"Equipos",catalogos:"Catálogos",datos:"Importar / Exportar",
+    expediente:"Expediente"};
+  var base = ENTIDADES[vista] ? ENTIDADES[vista].titulo : (nombres[vista]||"");
+  var extra="";
+  if(parts[1]==="nuevo") extra=" / Nuevo";
+  else if(parts[1]==="editar") extra=" / Editar";
+  else if(vista==="expediente") extra=" / "+esc(parts[1]||"");
+  document.getElementById("crumb").innerHTML="<b>"+esc(base)+"</b>"+extra;
+}
+
+function irA(hash){ location.hash=hash; }
+
+/* ===========================================================================
+   8. VISTA: TABLERO
+   =========================================================================== */
+var filtrosTablero={q:"",tecnico:"",estado:"",desde:"",hasta:""};
+
+function renderTablero(){
+  var k=calcularKPIs();
+  var kpis=[
+    {lab:"Casos abiertos", val:k.abiertos, c:"var(--info)", icon:ICON_KPI.abiertos, sub:"Eventos en curso"},
+    {lab:"Equipos No Operativos", val:k.noOperativos, c:"var(--danger)", icon:ICON_KPI.no, sub:"Estado actual"},
+    {lab:"En Servicio Técnico", val:k.servicioTecnico, c:"var(--warn)", icon:ic("envios"), sub:"Enviados sin retorno"},
+    {lab:"Dados de baja", val:k.bajas, c:"var(--neutral)", icon:ICON_KPI.baja, sub:"Total histórico"},
+    {lab:"Casos cerrados", val:k.cerrados, c:"var(--ok)", icon:ICON_KPI.cerr, sub:"Eventos finalizados"}
+  ];
+  var kpiHtml=kpis.map(function(x){
+    return '<div class="kpi" style="--c:'+x.c+'"><div class="lab">'+
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'+x.icon+'</svg>'+
+      esc(x.lab)+'</div><div class="val">'+x.val+'</div><div class="sub">'+esc(x.sub)+'</div></div>';
+  }).join("");
+
+  var tecOpts='<option value="">Todos</option>'+DB.catalogos.tecnicos.map(function(t){
+    return '<option'+(filtrosTablero.tecnico===t?' selected':'')+'>'+esc(t)+'</option>';}).join("");
+  var estOpts='<option value="">Todos</option>'+["Operativo","No Operativo","Servicio Técnico","Baja"].map(function(e){
+    return '<option'+(filtrosTablero.estado===e?' selected':'')+'>'+esc(e)+'</option>';}).join("");
+
+  document.getElementById("view").innerHTML=
+    '<div class="page-head"><div class="titles"><h1>Tablero de control</h1>'+
+      '<p>Casos correctivos abiertos. El estado actual y los días abiertos se calculan automáticamente.</p></div>'+
+      '<div class="actions"><button class="btn" data-action="export-tablero">'+ic("datos")+'Exportar tablero</button>'+
+      '<button class="btn primary" data-nav="ot-nuevo">'+iconMas()+'Nueva OT</button></div></div>'+
+    '<div class="kpis">'+kpiHtml+'</div>'+
+    '<div class="toolbar">'+
+      '<div class="field grow search-wrap"><label for="ftQ">Buscar</label>'+
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'+
+        '<input id="ftQ" data-filtro="q" value="'+esc(filtrosTablero.q)+'" placeholder="Folio, equipo, servicio…"></div>'+
+      '<div class="field"><label for="ftTec">Técnico</label><select id="ftTec" data-filtro="tecnico">'+tecOpts+'</select></div>'+
+      '<div class="field"><label for="ftEst">Estado actual</label><select id="ftEst" data-filtro="estado">'+estOpts+'</select></div>'+
+      '<div class="field"><label for="ftD">Desde (Fecha OT)</label><input type="date" id="ftD" data-filtro="desde" value="'+esc(filtrosTablero.desde)+'"></div>'+
+      '<div class="field"><label for="ftH">Hasta</label><input type="date" id="ftH" data-filtro="hasta" value="'+esc(filtrosTablero.hasta)+'"></div>'+
+      '<div class="field"><label>&nbsp;</label><button class="btn ghost" data-action="limpiar-filtros">Limpiar</button></div>'+
+    '</div>'+
+    '<div class="table-wrap"><div class="tbl-scroll"><table class="data" id="tablaTablero"><thead><tr>'+
+      '<th>Folio SIGEM</th><th>Equipo</th><th>Servicio</th><th>Estado actual</th><th>Técnico</th>'+
+      '<th>Fecha OT</th><th>Días abierto</th><th>Evento</th></tr></thead><tbody></tbody></table></div>'+
+      '<div id="tableroFoot"></div></div>';
+  pintarTablaTablero();
+}
+
+/** Aplica los filtros y dibuja el cuerpo de la tabla del Tablero. */
+function pintarTablaTablero(){
+  var f=filtrosTablero, q=norm(f.q);
+  var filas=DB.ordenes.filter(function(o){return o.estadoEvento==="Abierto";})
+    .filter(function(o){
+      var est=estadoActual(o.folio);
+      if(f.tecnico && o.tecnico!==f.tecnico) return false;
+      if(f.estado && est!==f.estado) return false;
+      if(f.desde && (!o.fechaOT || o.fechaOT<f.desde)) return false;
+      if(f.hasta && (!o.fechaOT || o.fechaOT>f.hasta)) return false;
+      if(q){
+        var blob=norm([o.folio,o.equipo,o.servicio,o.tecnico,o.inventario,est].join(" "));
+        if(blob.indexOf(q)<0) return false;
+      }
+      return true;
+    })
+    .sort(function(a,b){ return (b.fechaOT||"").localeCompare(a.fechaOT||""); });
+
+  var tb=document.querySelector("#tablaTablero tbody");
+  if(!filas.length){
+    tb.innerHTML='<tr><td colspan="8" class="empty" style="padding:34px">'+
+      ic("expediente")+'<h3>Sin casos abiertos</h3><p>No hay órdenes de trabajo que coincidan con los filtros.</p></td></tr>';
+    document.getElementById("tableroFoot").innerHTML="";
+    return;
+  }
+  tb.innerHTML=filas.map(function(o){
+    var est=estadoActual(o.folio);
+    var dias=diasDesde(o.fechaOT);
+    var diasTxt = dias==null ? "—" : (dias+" día"+(dias===1?"":"s"));
+    var diasCls = (dias!=null && dias>30) ? ' class="dias-alerta"' : "";
+    return '<tr class="clickable" data-action="expediente" data-folio="'+esc(o.folio)+'">'+
+      '<td><span class="folio-link">'+esc(o.folio)+'</span></td>'+
+      '<td>'+esc(o.equipo||"—")+'</td>'+
+      '<td>'+esc(o.servicio||"—")+'</td>'+
+      '<td>'+badge(est,"estado")+'</td>'+
+      '<td>'+esc(o.tecnico||"—")+'</td>'+
+      '<td>'+esc(fmtFecha(o.fechaOT))+'</td>'+
+      '<td><span'+diasCls+'>'+diasTxt+'</span></td>'+
+      '<td>'+badge(o.estadoEvento,"evento")+'</td></tr>';
+  }).join("");
+  document.getElementById("tableroFoot").innerHTML='<div class="pager"><span>'+filas.length+' caso'+(filas.length===1?"":"s")+' abierto'+(filas.length===1?"":"s")+'</span></div>';
+}
+
+/* Construye un badge HTML a partir de un valor y su tipo (estado/evento). */
+function badge(valor, tipo){
+  if(!valor) return '<span style="color:var(--text-soft)">—</span>';
+  var cls;
+  if(tipo==="evento") cls = valor==="Abierto" ? "info" : "neutral";
+  else cls = claseEstado(valor);
+  return '<span class="badge '+cls+'"><span class="dot"></span>'+esc(valor)+'</span>';
+}
+function iconMas(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>'; }
+
+/* ===========================================================================
+   9. VISTA: LISTA GENÉRICA (para todos los módulos de etapa + OT)
+   =========================================================================== */
+var busquedaLista={}; // estado de búsqueda por entidad
+
+function valorColumna(ent, rec, col){
+  if(col.k==="equipoCalc"){
+    var ot=DB.ordenes.find(function(o){return o.folio===rec.folio;});
+    return ot ? (ot.equipo||"") : "";
+  }
+  if(col.k==="estadoActual") return estadoActual(rec.folio);
+  var v=rec[col.k];
+  if(col.money) return fmtCLP(v);
+  if(col.date) return fmtFecha(v);
+  return v==null ? "" : v;
+}
+
+function renderLista(ent){
+  var cfg=ENTIDADES[ent];
+  var q=busquedaLista[ent]||"";
+  var data=DB[cfg.store].slice();
+
+  // Si es una etapa vinculada y aún no hay OTs, avisar.
+  var sinOT = !cfg.esOT && DB.ordenes.length===0;
+
+  // Filtro de búsqueda
+  var qn=norm(q);
+  if(qn){
+    data=data.filter(function(r){
+      var partes=cfg.cols.map(function(c){return valorColumna(ent,r,c);});
+      return norm(partes.join(" ")).indexOf(qn)>=0;
+    });
+  }
+  data.sort(function(a,b){ return (b.fecha||b.fechaOT||b.fechaVisita||b.fechaEnvio||b.fechaBaja||b.fechaCotizacion||"").localeCompare(a.fecha||a.fechaOT||a.fechaVisita||a.fechaEnvio||a.fechaBaja||a.fechaCotizacion||""); });
+
+  var nuevoBtn= sinOT ? "" :
+    '<button class="btn primary" data-nav="'+ent+'-nuevo">'+iconMas()+'Nuevo registro</button>';
+
+  var head=
+    '<div class="page-head"><div class="titles"><h1>'+esc(cfg.titulo)+'</h1><p>'+esc(cfg.intro)+'</p></div>'+
+    '<div class="actions"><button class="btn" data-action="export-modulo" data-ent="'+ent+'">'+ic("datos")+'Exportar</button>'+nuevoBtn+'</div></div>';
+
+  if(sinOT){
+    document.getElementById("view").innerHTML=head+
+      '<div class="card"><div class="empty">'+ic("ot")+
+      '<h3>Primero crea una Orden de Trabajo</h3>'+
+      '<p>Las etapas del expediente se vinculan a una OT mediante su Folio SIGEM. Crea la OT del caso para poder registrar esta etapa.</p>'+
+      '<button class="btn primary" data-nav="ot-nuevo">'+iconMas()+'Crear Orden de Trabajo</button></div></div>';
+    return;
+  }
+
+  var thead='<tr>'+cfg.cols.map(function(c){return '<th>'+esc(c.label)+'</th>';}).join("")+'<th style="text-align:right">Acciones</th></tr>';
+
+  var body;
+  if(!data.length){
+    body='<tr><td colspan="'+(cfg.cols.length+1)+'" class="empty" style="padding:34px">'+ic(ent)+
+      '<h3>Sin registros'+(q?' para la búsqueda':'')+'</h3><p>'+(q?'Prueba con otros términos.':'Aún no se han registrado '+esc(cfg.titulo.toLowerCase())+'.')+'</p></td></tr>';
+  }else{
+    body=data.map(function(r){
+      var tds=cfg.cols.map(function(c){
+        var val=valorColumna(ent,r,c);
+        if(c.folio) return '<td><span class="folio-link">'+esc(val)+'</span></td>';
+        if(c.badge) return '<td>'+badge(val,c.badge)+'</td>';
+        if(c.money) return '<td class="num">'+esc(val||"—")+'</td>';
+        return '<td>'+esc(trunc(val,60)||"—")+'</td>';
+      }).join("");
+      return '<tr data-folio="'+esc(r.folio)+'">'+tds+
+        '<td><div class="row-actions">'+
+        '<button class="icon-btn" title="Ver expediente" data-action="expediente" data-folio="'+esc(r.folio)+'">'+ic("expediente")+'</button>'+
+        '<button class="icon-btn" title="Editar" data-action="editar" data-ent="'+ent+'" data-id="'+esc(r.id)+'">'+iconEdit()+'</button>'+
+        '<button class="icon-btn danger" title="Eliminar" data-action="eliminar" data-ent="'+ent+'" data-id="'+esc(r.id)+'">'+iconTrash()+'</button>'+
+        '</div></td></tr>';
+    }).join("");
+  }
+
+  document.getElementById("view").innerHTML=head+
+    '<div class="toolbar"><div class="field grow search-wrap"><label for="busq">Buscar</label>'+
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'+
+      '<input id="busq" data-busqueda="'+ent+'" value="'+esc(q)+'" placeholder="Filtrar por folio, equipo, fecha…"></div></div>'+
+    '<div class="table-wrap"><div class="tbl-scroll"><table class="data"><thead>'+thead+'</thead><tbody>'+body+'</tbody></table></div>'+
+    '<div class="pager"><span>'+data.length+' registro'+(data.length===1?"":"s")+'</span></div></div>';
+}
+
+function trunc(s,n){ s=String(s==null?"":s); return s.length>n ? s.slice(0,n-1)+"…" : s; }
+function iconEdit(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>'; }
+function iconTrash(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>'; }
+
+/* ===========================================================================
+   10. VISTA: FORMULARIO GENÉRICO (crear / editar)
+   =========================================================================== */
+function renderFormulario(ent, id, prefillFolio){
+  var cfg=ENTIDADES[ent];
+  var editando=!!id;
+  var rec = editando ? DB[cfg.store].find(function(r){return r.id===id;}) : null;
+  if(editando && !rec){ toast("Registro no encontrado.","error"); irA("#"+ent); return; }
+
+  var datos = rec ? Object.assign({},rec) : {};
+  if(!editando && prefillFolio) datos.folio=prefillFolio;
+
+  // Construcción de campos
+  var campos=cfg.campos.map(function(c){
+    if(c.sec) return '<div class="form-section-title">'+esc(c.sec)+'</div>';
+    return renderCampo(ent,c,datos,editando);
+  }).join("");
+
+  // Datalist de inventarios (para autocompletado de la OT)
+  var datalist="";
+  if(cfg.esOT){
+    datalist='<datalist id="dl_inventarios">'+DB.equipos.map(function(e){
+      return '<option value="'+esc(e.inventario)+'">'+esc(e.equipo||"")+'</option>';
+    }).join("")+'</datalist>';
+  }
+
+  var titulo=(editando?"Editar ":"Nueva ")+cfg.singular;
+
+  document.getElementById("view").innerHTML=
+    '<div class="page-head"><div class="titles"><h1>'+esc(titulo)+'</h1><p>'+esc(cfg.intro)+'</p></div></div>'+
+    '<form class="form-card" id="form-ent" data-ent="'+ent+'" data-id="'+esc(id||"")+'" novalidate>'+
+      '<div class="fc-head"><h2>'+esc(titulo)+'</h2>'+
+        (cfg.esOT?'<p>Los campos marcados como <b>auto</b> se rellenan solos al ingresar el N° Inventario.</p>':'<p>Vincula este registro a una Orden de Trabajo mediante su Folio SIGEM.</p>')+'</div>'+
+      '<div class="form-grid">'+campos+'</div>'+ datalist +
+      '<div class="fc-foot">'+
+        '<button type="button" class="btn" data-action="cancelar-form" data-ent="'+ent+'">Cancelar</button>'+
+        '<button type="submit" class="btn primary">'+iconCheck()+(editando?"Guardar cambios":"Crear registro")+'</button>'+
+      '</div></form>';
+
+  // Foco inicial. (No se auto-rellena al cargar: al editar una OT se conservan
+  //  los valores históricos de Equipo/Serie/Servicio; solo se recalculan si el
+  //  usuario cambia el N° Inventario.)
+  var form=document.getElementById("form-ent");
+  // Vista previa de moneda inicial
+  cfg.campos.forEach(function(c){ if(c.type==="currency") actualizarMoneda(form,c.name); });
+  var primero=form.querySelector("input:not([readonly]):not([type=hidden]),select,textarea");
+  if(primero) primero.focus();
+}
+
+/** Construye el HTML de un campo según su tipo. */
+function renderCampo(ent,c,datos,editando){
+  var id="f_"+c.name;
+  var v = datos[c.name]!=null ? datos[c.name] : (c.def||"");
+  var req = c.required ? " required" : "";
+  var ctrl="";
+
+  // Folio de la OT bloqueado al editar (clave primaria inmutable)
+  if(c.lockOnEdit && editando){
+    ctrl='<input type="text" id="'+id+'" name="'+c.name+'" value="'+esc(v)+'" readonly class="auto" tabindex="-1">'+
+      '<span class="auto-tag">clave</span>';
+    return campoWrap(c,id,ctrl);
+  }
+
+  switch(c.type){
+    case "textarea":
+      ctrl='<textarea id="'+id+'" name="'+c.name+'" rows="3"'+req+' placeholder="'+esc(c.ph||"")+'">'+esc(v)+'</textarea>';
+      break;
+    case "date":
+      ctrl='<input type="date" id="'+id+'" name="'+c.name+'" value="'+esc(v)+'"'+req+'>';
+      break;
+    case "number":
+      ctrl='<input type="number" id="'+id+'" name="'+c.name+'" value="'+esc(v)+'"'+req+'>';
+      break;
+    case "currency":
+      ctrl='<input type="number" min="0" step="1" inputmode="numeric" id="'+id+'" name="'+c.name+'" value="'+esc(v)+'"'+req+' data-currency="1" placeholder="0">'+
+        '<span class="hint-money" id="money_'+c.name+'"></span>';
+      break;
+    case "select":{
+      var opts = c.catalog ? (DB.catalogos[c.catalog]||[]) : (c.options||[]);
+      ctrl='<select id="'+id+'" name="'+c.name+'"'+req+'><option value="">— Seleccionar —</option>'+
+        opts.map(function(o){return '<option value="'+esc(o)+'"'+(String(o)===String(v)?" selected":"")+'>'+esc(o)+'</option>';}).join("")+
+        '</select>';
+      break;
+    }
+    case "boolean":
+      ctrl='<select id="'+id+'" name="'+c.name+'"'+req+'><option value="">—</option>'+
+        ["Sí","No"].map(function(o){return '<option'+(o===v?" selected":"")+'>'+o+'</option>';}).join("")+'</select>';
+      break;
+    case "folioRef":{
+      var ots=DB.ordenes.slice().sort(function(a,b){return String(a.folio).localeCompare(String(b.folio),"es",{numeric:true});});
+      ctrl='<select id="'+id+'" name="'+c.name+'"'+req+'><option value="">— Seleccionar OT —</option>'+
+        ots.map(function(o){return '<option value="'+esc(o.folio)+'"'+(o.folio===v?" selected":"")+'>'+esc(o.folio)+(o.equipo?" — "+esc(trunc(o.equipo,40)):"")+'</option>';}).join("")+
+        '</select>';
+      break;
+    }
+    case "inventario":
+      ctrl='<input type="text" id="'+id+'" name="'+c.name+'" value="'+esc(v)+'"'+req+
+        ' list="dl_inventarios" autocomplete="off" data-inventario="1" placeholder="Ej.: 00039">';
+      break;
+    case "auto":
+      ctrl='<input type="text" id="'+id+'" name="'+c.name+'" value="'+esc(v)+'" readonly class="auto" data-auto="1" tabindex="-1">'+
+        '<span class="auto-tag">auto</span>';
+      break;
+    default:
+      ctrl='<input type="text" id="'+id+'" name="'+c.name+'" value="'+esc(v)+'"'+req+' placeholder="'+esc(c.ph||"")+'">';
+  }
+  return campoWrap(c,id,ctrl);
+}
+function campoWrap(c,id,ctrl){
+  var cls="campo"+((c.type==="textarea"||c.full)?" campo-full":"");
+  var reqMark = c.required ? ' <span class="req" aria-hidden="true">*</span>' : "";
+  var hint = c.hint ? '<span class="hint">'+esc(c.hint)+'</span>' : "";
+  return '<div class="'+cls+'" data-campo="'+c.name+'"><label for="'+id+'">'+esc(c.label)+reqMark+'</label>'+ctrl+hint+'</div>';
+}
+function iconCheck(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>'; }
+
+/** Autocompleta Equipo, N° Serie y Servicio desde el maestro al cambiar el inventario. */
+function autocompletarEquipo(form){
+  var inputInv=form.querySelector('[data-inventario]');
+  if(!inputInv) return;
+  var inv=String(inputInv.value||"").trim();
+  var eq=equiposPorInventario[inv];
+  var set=function(name,val){ var f=form.querySelector('[name="'+name+'"]'); if(f) f.value = val||""; };
+  if(eq){ set("equipo",eq.equipo); set("serie",eq.serie); set("servicio",eq.servicio); }
+  else { set("equipo",""); set("serie",""); set("servicio",""); }
+}
+
+/** Muestra la vista previa del monto en CLP debajo del campo. */
+function actualizarMoneda(form,name){
+  var inp=form.querySelector('[name="'+name+'"]');
+  var span=document.getElementById("money_"+name);
+  if(inp&&span) span.textContent = inp.value!=="" ? fmtCLP(inp.value) : "";
+}
+
+/* ===========================================================================
+   11. GUARDAR / VALIDAR / ELIMINAR
+   =========================================================================== */
+function leerFormulario(ent,form){
+  var obj={};
+  ENTIDADES[ent].campos.forEach(function(c){
+    if(c.sec) return;
+    var f=form.querySelector('[name="'+c.name+'"]');
+    if(!f) return;
+    var val=f.value;
+    // Inventario y Serie SIEMPRE como texto (preservar ceros a la izquierda)
+    obj[c.name] = typeof val==="string" ? val.trim() : val;
+  });
+  return obj;
+}
+
+function validar(ent,obj,editId,form){
+  var errores=[];
+  // limpiar marcas previas
+  form.querySelectorAll(".campo.invalido").forEach(function(d){d.classList.remove("invalido");});
+  form.querySelectorAll(".err-msg").forEach(function(e){e.remove();});
+
+  ENTIDADES[ent].campos.forEach(function(c){
+    if(c.sec||c.type==="auto") return;
+    if(c.required && !String(obj[c.name]||"").trim()){
+      marcarError(form,c.name,"Obligatorio");
+      errores.push("«"+c.label+"» es obligatorio");
+    }
+  });
+
+  if(ENTIDADES[ent].esOT){
+    var folio=String(obj.folio||"").trim();
+    if(folio){
+      var dup=DB.ordenes.some(function(o){return o.folio===folio && o.id!==editId;});
+      if(dup){ marcarError(form,"folio","Ya existe"); errores.push("El Folio SIGEM «"+folio+"» ya existe"); }
+    }
+  }
+  var refCampo=ENTIDADES[ent].campos.find(function(c){return c.type==="folioRef";});
+  if(refCampo && obj[refCampo.name]){
+    if(!DB.ordenes.some(function(o){return o.folio===obj[refCampo.name];})){
+      marcarError(form,refCampo.name,"OT inexistente");
+      errores.push("Debe vincular a una OT existente");
+    }
+  }
+  return errores;
+}
+function marcarError(form,name,msg){
+  var d=form.querySelector('[data-campo="'+name+'"]');
+  if(!d) return;
+  d.classList.add("invalido");
+  if(!d.querySelector(".err-msg")){
+    var s=document.createElement("span"); s.className="err-msg"; s.textContent=msg; d.appendChild(s);
+  }
+}
+
+function guardarFormulario(form){
+  var ent=form.dataset.ent, editId=form.dataset.id||"";
+  var cfg=ENTIDADES[ent];
+  var obj=leerFormulario(ent,form);
+  var errores=validar(ent,obj,editId,form);
+  if(errores.length){
+    toast(errores.length+" campo(s) por corregir: "+errores[0]+(errores.length>1?"…":""),"error");
+    var primero=form.querySelector(".campo.invalido input,.campo.invalido select,.campo.invalido textarea");
+    if(primero) primero.focus();
+    return;
+  }
+  var store=cfg.store;
+  if(editId){
+    var i=DB[store].findIndex(function(r){return r.id===editId;});
+    obj.id=editId;
+    DB[store][i]=Object.assign({},DB[store][i],obj);
+  }else{
+    obj.id=nuevoId();
+    DB[store].push(obj);
+  }
+  guardarDB();
+  toast((editId?"Cambios guardados":"Registro creado")+" correctamente.","ok");
+  // Volver al expediente del caso (vista consolidada)
+  irA("#expediente/"+encodeURIComponent(obj.folio));
+}
+
+function eliminarRegistro(ent,id){
+  var cfg=ENTIDADES[ent];
+  var rec=DB[cfg.store].find(function(r){return r.id===id;});
+  if(!rec) return;
+
+  if(cfg.esOT){
+    var n=vinculadosCount(rec.folio);
+    var msg = n>0
+      ? "Se eliminará la OT «"+rec.folio+"» y sus "+n+" registro(s) vinculado(s) en otras etapas. Esta acción no se puede deshacer."
+      : "Se eliminará la OT «"+rec.folio+"». Esta acción no se puede deshacer.";
+    confirmar("Eliminar Orden de Trabajo", msg, "Eliminar", true).then(function(ok){
+      if(!ok) return;
+      // Cascada: eliminar registros vinculados por folio
+      ["terreno","visitas","compras","repuestos","envios","bajas"].forEach(function(k){
+        DB[k]=DB[k].filter(function(r){return r.folio!==rec.folio;});
+      });
+      DB.ordenes=DB.ordenes.filter(function(r){return r.id!==id;});
+      guardarDB(); toast("Orden de Trabajo eliminada.","ok"); router();
+    });
+    return;
+  }
+
+  confirmar("Eliminar registro","¿Eliminar este registro de «"+cfg.titulo+"»? Esta acción no se puede deshacer.","Eliminar",true).then(function(ok){
+    if(!ok) return;
+    DB[cfg.store]=DB[cfg.store].filter(function(r){return r.id!==id;});
+    guardarDB(); toast("Registro eliminado.","ok"); router();
+  });
+}
+
+/* ===========================================================================
+   12. VISTA: EXPEDIENTE POR FOLIO SIGEM (línea de tiempo)
+   =========================================================================== */
+function renderExpediente(folio){
+  folio=String(folio||"");
+  var ot=DB.ordenes.find(function(o){return o.folio===folio;});
+  var view=document.getElementById("view");
+  if(!ot){
+    view.innerHTML='<div class="card"><div class="empty">'+ic("expediente")+
+      '<h3>Folio no encontrado</h3><p>No existe una Orden de Trabajo con el Folio SIGEM «'+esc(folio)+'».</p>'+
+      '<button class="btn" data-nav="tablero">Volver al tablero</button></div></div>';
+    return;
+  }
+  var est=estadoActual(folio);
+  var dias=diasDesde(ot.fechaOT);
+  var diasTxt = dias==null ? "—" : (dias+" día"+(dias===1?"":"s"));
+  var diasCls = (dias!=null && dias>30 && ot.estadoEvento==="Abierto") ? "dias-alerta" : "";
+
+  // --- Resumen del caso ---
+  var resumen='<div class="card exp-summary"><div class="card-pad">'+
+    '<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">'+badge(est,"estado")+badge(ot.estadoEvento,"evento")+'</div>'+
+    '<h3>'+esc(ot.equipo||"(equipo sin nombre)")+'</h3>'+
+    '<div class="inv">N° Inventario '+esc(ot.inventario||"—")+' · Serie '+esc(ot.serie||"—")+'</div>'+
+    '<div class="exp-meta">'+
+      metaRow("Folio SIGEM","<b class=\"folio-link\">"+esc(ot.folio)+"</b>")+
+      metaRow("Servicio",esc(ot.servicio||"—"))+
+      metaRow("Técnico asignado",esc(ot.tecnico||"—"))+
+      metaRow("Fecha OT",esc(fmtFecha(ot.fechaOT)))+
+      metaRow("Días abierto",'<span class="'+diasCls+'">'+diasTxt+'</span>')+
+      metaRow("Estado inicial",esc(ot.estadoInicial||"—"))+
+      (ot.fechaCierre?metaRow("Fecha cierre",esc(fmtFecha(ot.fechaCierre))):"")+
+    '</div></div></div>';
+
+  // --- Botones para agregar etapas ---
+  var etapas=[["terreno","Reparación terreno"],["visitas","Visita técnica"],["compras","Línea de compra"],
+    ["repuestos","Repuestos"],["envios","Envío serv. técnico"],["bajas","Baja"]];
+  var addBtns='<div class="add-stage">'+etapas.map(function(e){
+    return '<button class="btn sm" data-nav="'+e[0]+'-nuevo" data-folio="'+esc(folio)+'">'+iconMas()+esc(e[1])+'</button>';
+  }).join("")+'</div>';
+
+  // --- Línea de tiempo: reunir todos los registros vinculados ---
+  var items=[];
+  // Nodo de apertura (la OT)
+  items.push({fecha:ot.fechaOT, tipo:"Apertura de OT", color:"var(--info)", ent:null, id:null,
+    campos:[["Requerimiento",ot.requerimiento],["Estado inicial",ot.estadoInicial],["Técnico",ot.tecnico]]});
+
+  DB.terreno.filter(byFolio(folio)).forEach(function(r){
+    items.push({fecha:r.fecha, tipo:"Reparación en Terreno", color:"var(--ok)", ent:"terreno", id:r.id,
+      campos:[["Estado final",r.estadoFinal],["Descripción",r.descripcion]]});
+  });
+  DB.visitas.filter(byFolio(folio)).forEach(function(r){
+    items.push({fecha:r.fechaVisita, tipo:"Visita Técnica", color:"#7c3aed", ent:"visitas", id:r.id,
+      campos:[["Proveedor",r.proveedor],["Ingeniero externo",r.ingenieroExterno],["¿Reparó?",r.reparo],
+        ["Estado final",r.estadoFinal],["N° Reporte",r.nReporte],["Fecha reporte",fmtFecha(r.fechaReporte)],
+        ["Archivado (Cristián)",r.archivado],["Descripción",r.descripcion],["Fecha cierre",fmtFecha(r.fechaCierre)]]});
+  });
+  DB.compras.filter(byFolio(folio)).forEach(function(r){
+    items.push({fecha:r.fechaCotizacion||r.fechaEmisionOC, tipo:"Línea de Compra", color:"var(--warn)", ent:"compras", id:r.id,
+      campos:[["Ruta",r.ruta],["Proveedor cotizado",r.proveedorCotizado],["N° cotización",r.nCotizacion],
+        ["Monto",fmtCLP(r.montoCotizado)],["Tipo compra",r.tipoCompra],["N° Informe",r.nInformeTecnico],
+        ["Responsable informe",r.responsableInforme],["N° OC",r.nOC],["Emisión OC",fmtFecha(r.fechaEmisionOC)],
+        ["Envío proveedor",fmtFecha(r.fechaEnvioProveedor)],["Descripción OC",r.descripcionOC]]});
+  });
+  DB.repuestos.filter(byFolio(folio)).forEach(function(r){
+    items.push({fecha:r.fecha, tipo:"Repuestos (cierre)", color:"#0891b2", ent:"repuestos", id:r.id,
+      campos:[["Estado final",r.estadoFinal],["Descripción",r.descripcion]]});
+  });
+  DB.envios.filter(byFolio(folio)).forEach(function(r){
+    items.push({fecha:r.fechaEnvio, tipo:"Servicio Técnico (Envío)", color:"#d97706", ent:"envios", id:r.id,
+      campos:[["N° Hoja envío",r.nHojaEnvio],["Responsable",r.responsableEnvia],["Empresa destino",r.empresaDestino],
+        ["N° Reporte",r.nReporte],["Fecha reporte",fmtFecha(r.fechaReporte)],["Archivado (Cristián)",r.archivado],
+        ["Fecha retorno",fmtFecha(r.fechaRetorno)],["Folio guía",r.folioGuia],["Estado retorno",r.estadoRetorno],
+        ["Decisión si No Op.",r.decisionNoOperativo]]});
+  });
+  DB.bajas.filter(byFolio(folio)).forEach(function(r){
+    items.push({fecha:r.fechaBaja, tipo:"Baja", color:"var(--neutral)", ent:"bajas", id:r.id,
+      campos:[["Folio documento",r.folioDocBaja],["Responsable interno",r.responsableInterno],["Motivo",r.motivo]]});
+  });
+
+  // Orden cronológico (sin fecha al final)
+  items.sort(function(a,b){
+    var fa=a.fecha||"9999", fb=b.fecha||"9999";
+    return fa.localeCompare(fb);
+  });
+
+  var timeline=items.map(function(it){
+    var campos=it.campos.filter(function(c){return c[1]!=null && String(c[1]).trim()!=="";})
+      .map(function(c){return '<div class="f"><span class="k">'+esc(c[0])+'</span><span class="v">'+esc(c[1])+'</span></div>';}).join("");
+    var acciones = it.ent ?
+      '<button class="icon-btn" title="Editar" data-action="editar" data-ent="'+it.ent+'" data-id="'+esc(it.id)+'">'+iconEdit()+'</button>'+
+      '<button class="icon-btn danger" title="Eliminar" data-action="eliminar" data-ent="'+it.ent+'" data-id="'+esc(it.id)+'">'+iconTrash()+'</button>' : "";
+    return '<div class="tl-item" style="--c:'+it.color+'"><div class="tl-card">'+
+      '<div class="tl-head"><span class="tl-type">'+esc(it.tipo)+'</span>'+
+      '<span class="tl-date">'+(it.fecha?esc(fmtFecha(it.fecha)):"sin fecha")+'</span>'+
+      '<span class="tl-actions">'+acciones+'</span></div>'+
+      (campos?'<div class="tl-fields">'+campos+'</div>':'<div style="color:var(--text-soft);font-size:12.5px">Sin detalle adicional.</div>')+
+      '</div></div>';
+  }).join("");
+
+  view.innerHTML=
+    '<div class="page-head"><div class="titles"><h1>Expediente · Folio '+esc(folio)+'</h1>'+
+      '<p>Vista consolidada del caso con todas sus etapas en orden cronológico.</p></div>'+
+      '<div class="actions">'+
+        '<button class="btn" data-action="editar" data-ent="ot" data-id="'+esc(ot.id)+'">'+iconEdit()+'Editar OT</button>'+
+        '<button class="btn ghost" data-nav="tablero">Volver</button></div></div>'+
+    '<div class="exp-grid"><div>'+resumen+'</div>'+
+      '<div><h3 style="font-size:14px;margin-bottom:4px">Línea de tiempo del caso</h3>'+addBtns+
+      '<div class="timeline">'+timeline+'</div></div></div>';
+}
+function byFolio(folio){ return function(r){ return r.folio===folio; }; }
+function metaRow(k,v){ return '<div class="row"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>'; }
+
+/* ===========================================================================
+   13. VISTA: EQUIPOS (datos maestros, con búsqueda y paginación)
+   =========================================================================== */
+var equiposEstado={q:"",pag:1,porPag:50};
+
+function renderEquipos(){
+  var q=norm(equiposEstado.q);
+  var data=DB.equipos;
+  if(q){
+    data=data.filter(function(e){
+      return norm([e.inventario,e.equipo,e.marca,e.modelo,e.serie,e.servicio,e.ubicacion,e.clasificacion].join(" ")).indexOf(q)>=0;
+    });
+  }
+  var total=data.length;
+  var totPag=Math.max(1,Math.ceil(total/equiposEstado.porPag));
+  if(equiposEstado.pag>totPag) equiposEstado.pag=totPag;
+  var ini=(equiposEstado.pag-1)*equiposEstado.porPag;
+  var pagina=data.slice(ini,ini+equiposEstado.porPag);
+
+  var head='<div class="page-head"><div class="titles"><h1>Equipos</h1>'+
+    '<p>Maestro de equipamiento clínico ('+DB.equipos.length+' registros). N° Inventario y Serie se conservan como texto.</p></div>'+
+    '<div class="actions"><button class="btn" data-action="export-modulo" data-ent="equipos">'+ic("datos")+'Exportar</button>'+
+    '<button class="btn primary" data-nav="datos">'+ic("datos")+'Importar equipos</button></div></div>';
+
+  if(!DB.equipos.length){
+    document.getElementById("view").innerHTML=head+
+      '<div class="card"><div class="empty">'+ic("equipos")+
+      '<h3>Aún no hay equipos cargados</h3><p>Importa el listado maestro desde un archivo Excel (.xlsx) o CSV. Los N° de Inventario y Serie conservarán sus ceros a la izquierda.</p>'+
+      '<button class="btn primary" data-nav="datos">'+ic("datos")+'Ir a Importar</button></div></div>';
+    return;
+  }
+
+  var thead='<tr>'+COLS_EQUIPO.map(function(c){return '<th>'+esc(c.label)+'</th>';}).join("")+'</tr>';
+  var body= pagina.length ? pagina.map(function(e){
+    return '<tr>'+COLS_EQUIPO.map(function(c){
+      var v=e[c.k];
+      if(c.mono) return '<td><span class="folio-link" style="color:var(--text)">'+esc(v||"—")+'</span></td>';
+      return '<td>'+esc(trunc(v,40)||"—")+'</td>';
+    }).join("")+'</tr>';
+  }).join("") : '<tr><td colspan="'+COLS_EQUIPO.length+'" class="empty" style="padding:30px"><h3>Sin coincidencias</h3></td></tr>';
+
+  var pager='<div class="pager"><span>'+total+' equipo'+(total===1?"":"s")+(q?' (filtrados)':'')+'</span>'+
+    (totPag>1?'<button class="btn sm" data-action="eq-pag" data-pag="'+(equiposEstado.pag-1)+'"'+(equiposEstado.pag<=1?' disabled':'')+'>Anterior</button>'+
+     '<span>Página '+equiposEstado.pag+' de '+totPag+'</span>'+
+     '<button class="btn sm" data-action="eq-pag" data-pag="'+(equiposEstado.pag+1)+'"'+(equiposEstado.pag>=totPag?' disabled':'')+'>Siguiente</button>':'')+'</div>';
+
+  document.getElementById("view").innerHTML=head+
+    '<div class="toolbar"><div class="field grow search-wrap"><label for="busqEq">Buscar equipo</label>'+
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>'+
+      '<input id="busqEq" data-busqueda-eq="1" value="'+esc(equiposEstado.q)+'" placeholder="Inventario, equipo, marca, serie, servicio…"></div></div>'+
+    '<div class="table-wrap"><div class="tbl-scroll"><table class="data"><thead>'+thead+'</thead><tbody>'+body+'</tbody></table></div>'+pager+'</div>';
+}
+
+/* ===========================================================================
+   14. VISTA: CATÁLOGOS
+   =========================================================================== */
+var CAT_META=[
+  {k:"tecnicos",label:"Ingenieros / Técnicos"},
+  {k:"estadoEquipo",label:"Estado del equipo"},
+  {k:"tipoCompra",label:"Tipo de compra"},
+  {k:"resultadoVisita",label:"Resultado de visita"},
+  {k:"estadoEvento",label:"Estado del evento"},
+  {k:"decisionReevaluacion",label:"Decisión de reevaluación"},
+  {k:"empresas",label:"Empresas / proveedores"},
+  {k:"servicios",label:"Servicios clínicos"}
+];
+
+function renderCatalogos(){
+  var cards=CAT_META.map(function(m){
+    var items=DB.catalogos[m.k]||[];
+    var rows= items.length ? items.map(function(v,i){
+      return '<div class="cat-row"><span class="nm">'+esc(v)+'</span>'+
+        '<button class="icon-btn" title="Editar" data-action="cat-edit" data-cat="'+m.k+'" data-i="'+i+'">'+iconEdit()+'</button>'+
+        '<button class="icon-btn danger" title="Eliminar" data-action="cat-del" data-cat="'+m.k+'" data-i="'+i+'">'+iconTrash()+'</button></div>';
+    }).join("") : '<div style="padding:14px;color:var(--text-soft);font-size:12.5px">Sin elementos.</div>';
+    var nota = m.k==="servicios" ? '<span class="lock">auto-derivado de equipos</span>' : "";
+    return '<div class="card cat-card"><div class="ch"><h3>'+esc(m.label)+'</h3>'+nota+'<span class="n">'+items.length+'</span></div>'+
+      '<div class="cat-items">'+rows+'</div>'+
+      '<div class="cat-add"><input type="text" data-cat-input="'+m.k+'" placeholder="Agregar a '+esc(m.label.toLowerCase())+'…" aria-label="Nuevo valor para '+esc(m.label)+'">'+
+      '<button class="btn primary sm" data-action="cat-add" data-cat="'+m.k+'">'+iconMas()+'Agregar</button></div></div>';
+  }).join("");
+
+  document.getElementById("view").innerHTML=
+    '<div class="page-head"><div class="titles"><h1>Catálogos</h1>'+
+      '<p>Listas que alimentan los desplegables de los formularios. Edítalas según tus necesidades.</p></div></div>'+
+    '<div class="cat-grid">'+cards+'</div>';
+}
+
+function catAgregar(cat){
+  var inp=document.querySelector('[data-cat-input="'+cat+'"]');
+  var val=(inp.value||"").trim();
+  if(!val){ inp.focus(); return; }
+  if((DB.catalogos[cat]||[]).some(function(x){return norm(x)===norm(val);})){ toast("Ese valor ya existe.","error"); return; }
+  DB.catalogos[cat].push(val);
+  DB.catalogos[cat].sort(function(a,b){return String(a).localeCompare(String(b),"es");});
+  guardarDB(); renderCatalogos(); toast("Valor agregado.","ok");
+}
+function catEditar(cat,i){
+  var actual=DB.catalogos[cat][i];
+  pedirTexto("Editar valor","Modifica el valor del catálogo:",actual).then(function(nuevo){
+    if(nuevo==null) return;
+    nuevo=nuevo.trim(); if(!nuevo) return;
+    DB.catalogos[cat][i]=nuevo;
+    guardarDB(); renderCatalogos(); toast("Valor actualizado.","ok");
+  });
+}
+function catEliminar(cat,i){
+  var val=DB.catalogos[cat][i];
+  confirmar("Eliminar valor","¿Eliminar «"+val+"» del catálogo? Los registros existentes que lo usen no se modifican.","Eliminar",true).then(function(ok){
+    if(!ok) return;
+    DB.catalogos[cat].splice(i,1);
+    guardarDB(); renderCatalogos(); toast("Valor eliminado.","ok");
+  });
+}
+
+/* ===========================================================================
+   15. VISTA: IMPORTAR / EXPORTAR
+   =========================================================================== */
+function renderDatos(){
+  document.getElementById("view").innerHTML=
+    '<div class="page-head"><div class="titles"><h1>Importar / Exportar</h1>'+
+      '<p>Carga el maestro de equipos y respalda toda la base de datos. Todo funciona sin conexión.</p></div></div>'+
+    '<div class="data-grid">'+
+      // Importar equipos
+      '<div class="card data-card card-pad" style="grid-column:span 2">'+
+        '<h3>'+ic("equipos")+'Importar Equipos (Excel / CSV)</h3>'+
+        '<p>Carga el listado maestro desde un archivo <b>.xlsx</b> o <b>.csv</b>. Se mapean las columnas por su nombre. '+
+        'El <b>N° Inventario</b> y la <b>Serie</b> se conservan como texto (no se pierden los ceros a la izquierda).</p>'+
+        '<div class="radio-row">'+
+          '<label><input type="radio" name="modoImport" value="reemplazar" checked> Reemplazar listado</label>'+
+          '<label><input type="radio" name="modoImport" value="complementar"> Complementar (agregar/actualizar)</label>'+
+        '</div>'+
+        '<div class="dropzone" id="dzEquipos" tabindex="0" role="button" aria-label="Seleccionar archivo de equipos">'+
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/></svg>'+
+          '<div>Haz clic o arrastra aquí tu archivo <b>.xlsx</b> o <b>.csv</b></div></div>'+
+        '<input type="file" id="fileEquipos" accept=".xlsx,.csv" style="display:none">'+
+        '<div id="previewEquipos"></div>'+
+      '</div>'+
+      // Exportar respaldo
+      '<div class="card data-card card-pad">'+
+        '<h3>'+ic("datos")+'Respaldo completo (JSON)</h3>'+
+        '<p>Exporta <b>toda</b> la base de datos (equipos, catálogos y todas las etapas) a un archivo <b>.json</b> para respaldo o para moverla a otro equipo.</p>'+
+        '<button class="btn primary" data-action="export-json">'+ic("datos")+'Exportar respaldo</button>'+
+      '</div>'+
+      // Restaurar respaldo
+      '<div class="card data-card card-pad">'+
+        '<h3>'+ic("datos")+'Restaurar respaldo (JSON)</h3>'+
+        '<p>Importa un archivo <b>.json</b> generado por esta aplicación. <b>Reemplazará</b> todos los datos actuales.</p>'+
+        '<button class="btn" data-action="trigger-restore">Seleccionar respaldo…</button>'+
+        '<input type="file" id="fileRestore" accept=".json,application/json" style="display:none">'+
+      '</div>'+
+      // Exportar módulos
+      '<div class="card data-card card-pad" style="grid-column:span 2">'+
+        '<h3>'+ic("datos")+'Exportar a Excel por módulo</h3>'+
+        '<p>Descarga cualquier módulo como archivo Excel (.xlsx).</p>'+
+        '<div style="display:flex;flex-wrap:wrap;gap:8px">'+
+          ['tablero','ot','terreno','visitas','compras','repuestos','envios','bajas','equipos'].map(function(k){
+            var lbl = k==="tablero" ? "Tablero" : (k==="equipos"?"Equipos":ENTIDADES[k].titulo);
+            var act = k==="tablero" ? "export-tablero" : "export-modulo";
+            return '<button class="btn sm" data-action="'+act+'" data-ent="'+k+'">'+esc(lbl)+'</button>';
+          }).join("")+
+        '</div>'+
+      '</div>'+
+      // Zona de peligro
+      '<div class="card data-card card-pad" style="grid-column:1/-1;border-color:var(--danger-bd)">'+
+        '<h3 style="color:var(--danger)">Borrar todos los datos</h3>'+
+        '<p>Elimina por completo la base de datos local. Esta acción no se puede deshacer; exporta un respaldo antes.</p>'+
+        '<button class="btn danger" data-action="wipe">Borrar todo</button>'+
+      '</div>'+
+    '</div>';
+
+  // Eventos de la zona de carga de equipos
+  var dz=document.getElementById("dzEquipos");
+  var fi=document.getElementById("fileEquipos");
+  dz.addEventListener("click",function(){ fi.click(); });
+  dz.addEventListener("keydown",function(e){ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); fi.click(); }});
+  dz.addEventListener("dragover",function(e){ e.preventDefault(); dz.classList.add("drag"); });
+  dz.addEventListener("dragleave",function(){ dz.classList.remove("drag"); });
+  dz.addEventListener("drop",function(e){ e.preventDefault(); dz.classList.remove("drag");
+    if(e.dataTransfer.files[0]) importarEquipos(e.dataTransfer.files[0]); });
+  fi.addEventListener("change",function(){ if(fi.files[0]) importarEquipos(fi.files[0]); });
+
+  document.getElementById("fileRestore").addEventListener("change",function(e){
+    if(e.target.files[0]) restaurarJSON(e.target.files[0]);
+  });
+}
+
+/* ===========================================================================
+   16. IMPORTACIÓN DE EQUIPOS (Excel/CSV) — offline
+   =========================================================================== */
+
+/* Mapa de encabezados (normalizados) -> campo canónico del equipo. */
+var MAPA_ENCABEZADOS={
+  "id":"id",
+  "n carpeta":"nCarpeta","numero carpeta":"nCarpeta","nro carpeta":"nCarpeta","carpeta":"nCarpeta",
+  "n inventario":"inventario","numero inventario":"inventario","nro inventario":"inventario","inventario":"inventario",
+  "equipo":"equipo","nombre equipo":"equipo",
+  "servicio":"servicio","servicio clinico":"servicio",
+  "unidad":"unidad",
+  "ubicacion":"ubicacion",
+  "procedencia":"procedencia",
+  "marca":"marca",
+  "modelo":"modelo",
+  "serie":"serie","n serie":"serie","numero serie":"serie","nro serie":"serie",
+  "ano instalacion":"anioInstalacion","anio instalacion":"anioInstalacion","ano instalcion":"anioInstalacion",
+  "clasificacion":"clasificacion","clasificacion equipo":"clasificacion"
+};
+
+function importarEquipos(file){
+  var nombre=file.name.toLowerCase();
+  var prev=document.getElementById("previewEquipos");
+  prev.innerHTML='<div class="preview-box">Leyendo «'+esc(file.name)+'»…</div>';
+
+  var procesar=function(filas){
+    try{
+      if(!filas || filas.length<2){ throw new Error("El archivo no tiene filas de datos."); }
+      // Encabezados
+      var headers=filas[0].map(function(h){return norm(h);});
+      var idxToCampo={};
+      headers.forEach(function(h,i){ if(MAPA_ENCABEZADOS[h]) idxToCampo[i]=MAPA_ENCABEZADOS[h]; });
+      var camposDetectados=Object.keys(idxToCampo).map(function(i){return idxToCampo[i];});
+      if(camposDetectados.indexOf("inventario")<0){
+        throw new Error("No se encontró la columna «N° Inventario». Revisa los encabezados.");
+      }
+      // Construir equipos
+      var nuevos=[];
+      for(var r=1;r<filas.length;r++){
+        var fila=filas[r];
+        if(!fila || fila.every(function(c){return String(c==null?"":c).trim()==="";})) continue; // fila vacía
+        var eq={};
+        CAMPOS_EQUIPO.forEach(function(c){eq[c]="";});
+        for(var i in idxToCampo){
+          var campo=idxToCampo[i];
+          var val=fila[i];
+          // Inventario y Serie SIEMPRE como texto (preservar ceros a la izquierda)
+          eq[campo] = val==null ? "" : String(val).trim();
+        }
+        if(!eq.inventario) continue; // sin inventario no sirve
+        eq._id = eq.id || nuevoId();
+        nuevos.push(eq);
+      }
+      if(!nuevos.length){ throw new Error("No se encontraron equipos válidos (con N° Inventario)."); }
+
+      var modo=(document.querySelector('input[name="modoImport"]:checked')||{}).value||"reemplazar";
+      aplicarImportEquipos(nuevos, modo, camposDetectados.length, prev);
+    }catch(err){
+      prev.innerHTML='<div class="preview-box" style="border-color:var(--danger-bd);color:var(--danger)"><b>Error:</b> '+esc(err.message)+'</div>';
+    }
+  };
+
+  if(nombre.endsWith(".csv")){
+    var reader=new FileReader();
+    reader.onload=function(){ procesar(parseCSV(reader.result)); };
+    reader.onerror=function(){ prev.innerHTML='<div class="preview-box" style="color:var(--danger)">No se pudo leer el archivo.</div>'; };
+    reader.readAsText(file,"UTF-8");
+  }else if(nombre.endsWith(".xlsx")){
+    file.arrayBuffer().then(function(buf){ return leerXLSX(buf); })
+      .then(function(filas){ procesar(filas); })
+      .catch(function(err){
+        prev.innerHTML='<div class="preview-box" style="border-color:var(--danger-bd);color:var(--danger)">'+
+          '<b>No se pudo leer el .xlsx:</b> '+esc(err.message)+'<br>Sugerencia: en Excel usa «Guardar como → CSV UTF-8» e importa el CSV.</div>';
+      });
+  }else{
+    prev.innerHTML='<div class="preview-box" style="color:var(--danger)">Formato no soportado. Usa .xlsx o .csv</div>';
+  }
+}
+
+function aplicarImportEquipos(nuevos, modo, nCols, prev){
+  var antes=DB.equipos.length;
+  if(modo==="reemplazar"){
+    DB.equipos=nuevos;
+  }else{
+    // Complementar: actualizar por inventario, agregar los nuevos
+    var idx={};
+    DB.equipos.forEach(function(e,i){ idx[String(e.inventario)]=i; });
+    nuevos.forEach(function(e){
+      var k=String(e.inventario);
+      if(k in idx) DB.equipos[idx[k]]=e; else DB.equipos.push(e);
+    });
+  }
+  reindexarEquipos();
+  derivarServicios();
+  guardarDB();
+  var ahora=DB.equipos.length;
+  prev.innerHTML='<div class="preview-box" style="border-color:var(--ok-bd)">'+
+    '<b>Importación correcta.</b> '+nuevos.length+' equipos procesados ('+nCols+' columnas mapeadas).<br>'+
+    'Total en la base: <b>'+ahora+'</b> equipos'+(modo==="complementar"?(' (antes '+antes+')'):'')+'. '+
+    'Servicios clínicos detectados: <b>'+DB.catalogos.servicios.length+'</b>.</div>';
+  pintarNav("datos");
+  toast(nuevos.length+" equipos importados.","ok");
+}
+
+/* --- Parser CSV robusto (detecta delimitador , ; o tab; respeta comillas) --- */
+function parseCSV(text){
+  if(text.charCodeAt(0)===0xFEFF) text=text.slice(1); // quitar BOM
+  var nl=text.indexOf("\n"); var primera = nl>=0 ? text.slice(0,nl) : text;
+  var cont={",":primera.split(",").length, ";":primera.split(";").length, "\t":primera.split("\t").length};
+  var delim=",", best=0;
+  for(var d in cont){ if(cont[d]>best){ best=cont[d]; delim=d; } }
+  var filas=[], fila=[], campo="", enComillas=false;
+  for(var i=0;i<text.length;i++){
+    var ch=text[i];
+    if(enComillas){
+      if(ch==='"'){ if(text[i+1]==='"'){ campo+='"'; i++; } else enComillas=false; }
+      else campo+=ch;
+    }else{
+      if(ch==='"') enComillas=true;
+      else if(ch===delim){ fila.push(campo); campo=""; }
+      else if(ch==="\n"){ fila.push(campo); filas.push(fila); fila=[]; campo=""; }
+      else if(ch==="\r"){ /* ignorar */ }
+      else campo+=ch;
+    }
+  }
+  if(campo!==""||fila.length){ fila.push(campo); filas.push(fila); }
+  return filas;
+}
+
+/* --- Lector de XLSX 100% offline ---------------------------------------------
+   Un .xlsx es un ZIP con XML adentro. Para leerlo sin librerías externas:
+     1) Se interpreta la estructura ZIP (directorio central) en JS.
+     2) Cada entrada se descomprime con la API nativa DecompressionStream
+        ('deflate-raw'), disponible en navegadores modernos. Sin red.
+     3) Se parsean sharedStrings.xml y la primera hoja con expresiones regulares.
+   Si el navegador no soporta DecompressionStream, se informa y se sugiere CSV.
+-----------------------------------------------------------------------------*/
+function leerXLSX(arrayBuffer){
+  return new Promise(function(resolve,reject){
+    try{
+      var bytes=new Uint8Array(arrayBuffer);
+      var entradas=parseZip(bytes);
+      var getEntry=function(nombre){ return entradas[nombre]; };
+
+      var desc=function(entry){
+        if(!entry) return Promise.resolve(new Uint8Array(0));
+        if(entry.method===0) return Promise.resolve(entry.data); // almacenado, sin comprimir
+        if(typeof DecompressionStream==="undefined")
+          return Promise.reject(new Error("Este navegador no soporta la descompresión nativa. Usa el formato CSV."));
+        var ds=new DecompressionStream("deflate-raw");
+        var stream=new Blob([entry.data]).stream().pipeThrough(ds);
+        return new Response(stream).arrayBuffer().then(function(ab){return new Uint8Array(ab);});
+      };
+      var aTexto=function(u8){ return new TextDecoder("utf-8").decode(u8); };
+
+      // Descomprimir sharedStrings y la primera hoja
+      desc(getEntry("xl/sharedStrings.xml")).then(function(ss){
+        var shared=parseSharedStrings(aTexto(ss));
+        // Nombre de la primera hoja
+        var sheetName="xl/worksheets/sheet1.xml";
+        if(!getEntry(sheetName)){
+          // buscar cualquier hoja
+          for(var k in entradas){ if(/^xl\/worksheets\/sheet.*\.xml$/.test(k)){ sheetName=k; break; } }
+        }
+        desc(getEntry(sheetName)).then(function(sh){
+          var filas=parseSheet(aTexto(sh),shared);
+          resolve(filas);
+        }).catch(reject);
+      }).catch(reject);
+    }catch(err){ reject(err); }
+  });
+}
+
+/** Interpreta la estructura ZIP y devuelve {nombre: {method, data}}. */
+function parseZip(bytes){
+  var dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  // Buscar EOCD (End Of Central Directory) desde el final
+  var eocd=-1;
+  for(var i=bytes.length-22;i>=0;i--){ if(dv.getUint32(i,true)===0x06054b50){ eocd=i; break; } }
+  if(eocd<0) throw new Error("Archivo ZIP/XLSX inválido (sin EOCD).");
+  var count=dv.getUint16(eocd+10,true);
+  var off=dv.getUint32(eocd+16,true);
+  var entradas={};
+  for(var e=0;e<count;e++){
+    if(dv.getUint32(off,true)!==0x02014b50) break;
+    var method=dv.getUint16(off+10,true);
+    var compSize=dv.getUint32(off+20,true);
+    var nameLen=dv.getUint16(off+28,true);
+    var extraLen=dv.getUint16(off+30,true);
+    var commentLen=dv.getUint16(off+32,true);
+    var localOff=dv.getUint32(off+42,true);
+    var nombre=new TextDecoder().decode(bytes.subarray(off+46,off+46+nameLen));
+    // Encabezado local: calcular inicio real de los datos
+    var lhNameLen=dv.getUint16(localOff+26,true);
+    var lhExtraLen=dv.getUint16(localOff+28,true);
+    var dataStart=localOff+30+lhNameLen+lhExtraLen;
+    entradas[nombre]={method:method, data:bytes.subarray(dataStart,dataStart+compSize)};
+    off+=46+nameLen+extraLen+commentLen;
+  }
+  return entradas;
+}
+
+/** Decodifica entidades XML básicas. */
+function decodeXml(s){
+  return String(s).replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"')
+    .replace(/&apos;/g,"'").replace(/&#(\d+);/g,function(_,n){return String.fromCharCode(+n);})
+    .replace(/&#x([0-9a-fA-F]+);/g,function(_,n){return String.fromCharCode(parseInt(n,16));})
+    .replace(/&amp;/g,"&");
+}
+
+/** Parsea sharedStrings.xml -> arreglo de cadenas. */
+function parseSharedStrings(xml){
+  var res=[];
+  if(!xml) return res;
+  var siRe=/<si\b[^>]*>([\s\S]*?)<\/si>/g, m;
+  while((m=siRe.exec(xml))){
+    var inner=m[1], texto="", tRe=/<t\b[^>]*>([\s\S]*?)<\/t>/g, tm;
+    while((tm=tRe.exec(inner))) texto+=decodeXml(tm[1]);
+    res.push(texto);
+  }
+  return res;
+}
+
+/** Convierte referencia de columna (A, B, …, AA) a índice 0-based. */
+function colAIndice(letras){
+  var n=0;
+  for(var i=0;i<letras.length;i++) n=n*26+(letras.charCodeAt(i)-64);
+  return n-1;
+}
+
+/** Parsea una hoja XML -> arreglo de filas (cada fila, arreglo de celdas texto). */
+function parseSheet(xml,shared){
+  var filas=[];
+  if(!xml) return filas;
+  var rowRe=/<row\b[^>]*>([\s\S]*?)<\/row>/g, rm;
+  while((rm=rowRe.exec(xml))){
+    var inner=rm[1], celdas={}, maxCol=-1;
+    var cRe=/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g, cm;
+    while((cm=cRe.exec(inner))){
+      var attrs=cm[1]||"", body=cm[2]||"";
+      var refM=attrs.match(/r="([A-Z]+)\d+"/);
+      var tM=attrs.match(/t="([^"]+)"/);
+      var t=tM?tM[1]:"";
+      var val="";
+      var vM=body.match(/<v\b[^>]*>([\s\S]*?)<\/v>/);
+      if(t==="s" && vM){ val=shared[parseInt(vM[1],10)]||""; }
+      else if(t==="inlineStr"){ var isM=body.match(/<t\b[^>]*>([\s\S]*?)<\/t>/); val=isM?decodeXml(isM[1]):""; }
+      else if(vM){ val=decodeXml(vM[1]); }
+      if(refM){ var ci=colAIndice(refM[1]); celdas[ci]=val; if(ci>maxCol) maxCol=ci; }
+    }
+    var arr=[];
+    for(var c=0;c<=maxCol;c++) arr.push(celdas[c]!==undefined?celdas[c]:"");
+    filas.push(arr);
+  }
+  return filas;
+}
+
+/* ===========================================================================
+   17. EXPORTACIÓN (respaldo JSON, restaurar, Excel .xlsx)
+   =========================================================================== */
+function exportarJSON(){
+  var blob=new Blob([JSON.stringify(DB,null,2)],{type:"application/json"});
+  descargar("respaldo_MP2026_"+sello()+".json",blob);
+  toast("Respaldo exportado.","ok");
+}
+function restaurarJSON(file){
+  var reader=new FileReader();
+  reader.onload=function(){
+    try{
+      var d=JSON.parse(reader.result);
+      if(typeof d!=="object"||!d) throw new Error("Formato inválido.");
+      confirmar("Restaurar respaldo","Esto reemplazará TODOS los datos actuales por los del archivo. ¿Continuar?","Restaurar",true).then(function(ok){
+        if(!ok) return;
+        DB.equipos=d.equipos||[]; DB.ordenes=d.ordenes||[]; DB.terreno=d.terreno||[];
+        DB.visitas=d.visitas||[]; DB.compras=d.compras||[]; DB.repuestos=d.repuestos||[];
+        DB.envios=d.envios||[]; DB.bajas=d.bajas||[];
+        DB.catalogos=Object.assign(catalogosSemilla(),d.catalogos||{});
+        DB.meta=d.meta||{seq:0};
+        reindexarEquipos(); guardarDB(); toast("Respaldo restaurado.","ok"); irA("#tablero"); router();
+      });
+    }catch(err){ toast("No se pudo leer el respaldo: "+err.message,"error"); }
+  };
+  reader.readAsText(file,"UTF-8");
+}
+
+/** Devuelve {headers, filas} de un módulo para exportar. */
+function datosModulo(ent){
+  if(ent==="equipos"){
+    return {
+      nombre:"Equipos",
+      headers:CAMPOS_EQUIPO.map(function(c){return ETIQUETA_EQUIPO[c];}),
+      filas:DB.equipos.map(function(e){return CAMPOS_EQUIPO.map(function(c){return e[c];});})
+    };
+  }
+  var cfg=ENTIDADES[ent];
+  var campos=cfg.campos.filter(function(c){return !c.sec;});
+  return {
+    nombre:cfg.titulo,
+    headers:["Equipo (ref)"].concat(campos.map(function(c){return c.label;})),
+    filas:DB[cfg.store].map(function(r){
+      var ot=DB.ordenes.find(function(o){return o.folio===r.folio;});
+      return [ot?ot.equipo:""].concat(campos.map(function(c){
+        if(c.type==="date") return fmtFecha(r[c.name]);
+        if(c.type==="currency") return r[c.name]!=null&&r[c.name]!==""?Number(r[c.name]):"";
+        return r[c.name];
+      }));
+    })
+  };
+}
+function exportarModulo(ent){
+  var d=datosModulo(ent);
+  if(!d.filas.length){ toast("No hay registros para exportar en este módulo.","error"); return; }
+  var blob=construirXLSX(d.nombre,d.headers,d.filas);
+  descargar(slug(d.nombre)+"_"+sello()+".xlsx",blob);
+  toast("Exportado: "+d.nombre+".","ok");
+}
+function exportarTablero(){
+  var headers=["Folio SIGEM","Equipo","Servicio","Estado actual","Técnico asignado","Fecha OT","Días abierto","Evento"];
+  var filas=DB.ordenes.filter(function(o){return o.estadoEvento==="Abierto";})
+    .sort(function(a,b){return (b.fechaOT||"").localeCompare(a.fechaOT||"");})
+    .map(function(o){
+      var dias=diasDesde(o.fechaOT);
+      return [o.folio,o.equipo,o.servicio,estadoActual(o.folio),o.tecnico,fmtFecha(o.fechaOT),dias==null?"":dias,o.estadoEvento];
+    });
+  if(!filas.length){ toast("No hay casos abiertos para exportar.","error"); return; }
+  var blob=construirXLSX("Tablero",headers,filas);
+  descargar("Tablero_MP2026_"+sello()+".xlsx",blob);
+  toast("Tablero exportado.","ok");
+}
+function slug(s){ return norm(s).replace(/\s+/g,"_"); }
+
+/* --- Generador de XLSX mínimo (ZIP con entradas «almacenadas», sin comprimir).
+   Un XLSX válido es un ZIP de archivos XML. Se construye a mano usando método
+   de almacenamiento 0 (sin compresión) para no depender de CompressionStream;
+   solo se requiere el cálculo de CRC-32. 100% offline. ------------------------*/
+var CRC_TABLE=(function(){
+  var t=new Uint32Array(256);
+  for(var n=0;n<256;n++){ var c=n; for(var k=0;k<8;k++) c = (c&1)?(0xEDB88320^(c>>>1)):(c>>>1); t[n]=c>>>0; }
+  return t;
+})();
+function crc32(u8){
+  var c=0xFFFFFFFF;
+  for(var i=0;i<u8.length;i++) c=CRC_TABLE[(c^u8[i])&0xFF]^(c>>>8);
+  return (c^0xFFFFFFFF)>>>0;
+}
+function celdaXml(ref,valor){
+  if(valor==null||valor==="") return '<c r="'+ref+'"/>';
+  if(typeof valor==="number" && isFinite(valor)) return '<c r="'+ref+'"><v>'+valor+'</v></c>';
+  var txt=String(valor).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  return '<c r="'+ref+'" t="inlineStr"><is><t xml:space="preserve">'+txt+'</t></is></c>';
+}
+function letraColumna(i){
+  var s=""; i++;
+  while(i>0){ var m=(i-1)%26; s=String.fromCharCode(65+m)+s; i=Math.floor((i-1)/26); }
+  return s;
+}
+function construirXLSX(hoja,headers,filas){
+  // Construir XML de la hoja
+  var rows=[];
+  var allRows=[headers].concat(filas);
+  for(var r=0;r<allRows.length;r++){
+    var celdas=allRows[r].map(function(v,ci){ return celdaXml(letraColumna(ci)+(r+1), v); }).join("");
+    rows.push('<row r="'+(r+1)+'">'+celdas+'</row>');
+  }
+  var nombreHoja=String(hoja).slice(0,31).replace(/[\\\/\?\*\[\]:]/g,"-");
+  var sheetXml='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'+rows.join("")+'</sheetData></worksheet>';
+  var workbook='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+    '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'+
+    '<sheets><sheet name="'+esc(nombreHoja)+'" sheetId="1" r:id="rId1"/></sheets></workbook>';
+  var wbRels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>';
+  var rels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
+  var contentTypes='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'+
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'+
+    '<Default Extension="xml" ContentType="application/xml"/>'+
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+
+    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>';
+
+  var archivos=[
+    {nombre:"[Content_Types].xml", contenido:contentTypes},
+    {nombre:"_rels/.rels", contenido:rels},
+    {nombre:"xl/workbook.xml", contenido:workbook},
+    {nombre:"xl/_rels/workbook.xml.rels", contenido:wbRels},
+    {nombre:"xl/worksheets/sheet1.xml", contenido:sheetXml}
+  ];
+  return zipAlmacenado(archivos);
+}
+
+/** Crea un Blob ZIP con entradas almacenadas (sin compresión). */
+function zipAlmacenado(archivos){
+  var enc=new TextEncoder();
+  var locales=[], central=[], offset=0;
+  archivos.forEach(function(f){
+    var nameBytes=enc.encode(f.nombre);
+    var data=enc.encode(f.contenido);
+    var crc=crc32(data);
+    // Encabezado local (30 bytes + nombre)
+    var lh=new Uint8Array(30+nameBytes.length);
+    var dv=new DataView(lh.buffer);
+    dv.setUint32(0,0x04034b50,true); // firma
+    dv.setUint16(4,20,true);         // versión
+    dv.setUint16(6,0,true);          // flags
+    dv.setUint16(8,0,true);          // método 0 = almacenado
+    dv.setUint16(10,0,true);         // hora
+    dv.setUint16(12,0,true);         // fecha
+    dv.setUint32(14,crc,true);
+    dv.setUint32(18,data.length,true); // tamaño comprimido
+    dv.setUint32(22,data.length,true); // tamaño sin comprimir
+    dv.setUint16(26,nameBytes.length,true);
+    dv.setUint16(28,0,true);
+    lh.set(nameBytes,30);
+    locales.push(lh,data);
+
+    // Registro del directorio central (46 bytes + nombre)
+    var ch=new Uint8Array(46+nameBytes.length);
+    var cv=new DataView(ch.buffer);
+    cv.setUint32(0,0x02014b50,true);
+    cv.setUint16(4,20,true);
+    cv.setUint16(6,20,true);
+    cv.setUint16(8,0,true);
+    cv.setUint16(10,0,true);
+    cv.setUint16(12,0,true);
+    cv.setUint16(14,0,true);
+    cv.setUint32(16,crc,true);
+    cv.setUint32(20,data.length,true);
+    cv.setUint32(24,data.length,true);
+    cv.setUint16(28,nameBytes.length,true);
+    cv.setUint16(30,0,true);
+    cv.setUint16(32,0,true);
+    cv.setUint16(34,0,true);
+    cv.setUint16(36,0,true);
+    cv.setUint32(38,0,true);
+    cv.setUint32(42,offset,true);
+    ch.set(nameBytes,46);
+    central.push(ch);
+
+    offset += lh.length + data.length;
+  });
+
+  var centralSize=central.reduce(function(a,b){return a+b.length;},0);
+  var centralOffset=offset;
+  // End Of Central Directory (22 bytes)
+  var eocd=new Uint8Array(22);
+  var ev=new DataView(eocd.buffer);
+  ev.setUint32(0,0x06054b50,true);
+  ev.setUint16(8,archivos.length,true);
+  ev.setUint16(10,archivos.length,true);
+  ev.setUint32(12,centralSize,true);
+  ev.setUint32(16,centralOffset,true);
+
+  var partes=locales.concat(central);
+  partes.push(eocd);
+  return new Blob(partes,{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+}
+
+function borrarTodo(){
+  confirmar("Borrar todos los datos","Se eliminará por completo la base de datos local (equipos, casos y catálogos). Esta acción no se puede deshacer.","Borrar todo",true).then(function(ok){
+    if(!ok) return;
+    localStorage.removeItem(STORAGE_KEY);
+    DB.equipos=[];DB.ordenes=[];DB.terreno=[];DB.visitas=[];DB.compras=[];DB.repuestos=[];DB.envios=[];DB.bajas=[];
+    DB.catalogos=catalogosSemilla(); DB.meta={seq:0};
+    reindexarEquipos(); guardarDB(); toast("Base de datos borrada.","ok"); irA("#tablero"); router();
+  });
+}
+
+/* ===========================================================================
+   18. MODALES, DIÁLOGOS Y TOAST
+   =========================================================================== */
+function confirmar(titulo,mensaje,textoOk,peligro){
+  return new Promise(function(resolve){
+    var root=document.getElementById("modal-root");
+    root.innerHTML='<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="mTit">'+
+      '<div class="m-body"><h3 id="mTit">'+(peligro?'<svg viewBox="0 0 24 24" fill="none" stroke="#c2261d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>':"")+esc(titulo)+'</h3><p>'+esc(mensaje)+'</p></div>'+
+      '<div class="m-foot"><button class="btn" data-modal="cancel">Cancelar</button>'+
+      '<button class="btn '+(peligro?"danger":"primary")+'" data-modal="ok">'+esc(textoOk||"Aceptar")+'</button></div></div></div>';
+    var cerrar=function(val){ root.innerHTML=""; document.removeEventListener("keydown",onKey); resolve(val); };
+    var onKey=function(e){ if(e.key==="Escape") cerrar(false); if(e.key==="Enter") cerrar(true); };
+    document.addEventListener("keydown",onKey);
+    root.querySelector('[data-modal="ok"]').addEventListener("click",function(){cerrar(true);});
+    root.querySelector('[data-modal="cancel"]').addEventListener("click",function(){cerrar(false);});
+    root.querySelector(".modal-backdrop").addEventListener("click",function(e){ if(e.target===this) cerrar(false); });
+    var okb=root.querySelector('[data-modal="'+(peligro?"cancel":"ok")+'"]'); if(okb) okb.focus();
+  });
+}
+function pedirTexto(titulo,mensaje,valor){
+  return new Promise(function(resolve){
+    var root=document.getElementById("modal-root");
+    root.innerHTML='<div class="modal-backdrop"><div class="modal" role="dialog" aria-modal="true">'+
+      '<div class="m-body"><h3>'+esc(titulo)+'</h3><p style="margin-bottom:10px">'+esc(mensaje)+'</p>'+
+      '<input id="modalInput" type="text" value="'+esc(valor||"")+'" style="width:100%;padding:9px 11px;border:1px solid var(--border-strong);border-radius:8px;font-size:14px"></div>'+
+      '<div class="m-foot"><button class="btn" data-modal="cancel">Cancelar</button>'+
+      '<button class="btn primary" data-modal="ok">Guardar</button></div></div></div>';
+    var inp=document.getElementById("modalInput"); inp.focus(); inp.select();
+    var cerrar=function(val){ root.innerHTML=""; document.removeEventListener("keydown",onKey); resolve(val); };
+    var onKey=function(e){ if(e.key==="Escape") cerrar(null); if(e.key==="Enter") cerrar(inp.value); };
+    document.addEventListener("keydown",onKey);
+    root.querySelector('[data-modal="ok"]').addEventListener("click",function(){cerrar(inp.value);});
+    root.querySelector('[data-modal="cancel"]').addEventListener("click",function(){cerrar(null);});
+    root.querySelector(".modal-backdrop").addEventListener("click",function(e){ if(e.target===this) cerrar(null); });
+  });
+}
+function toast(msg,tipo){
+  tipo=tipo||"info";
+  var iconos={ok:'<path d="M20 6 9 17l-5-5"/>',error:'<path d="M18 6 6 18M6 6l12 12"/>',info:'<path d="M12 16v-4M12 8h.01"/><circle cx="12" cy="12" r="10"/>'};
+  var root=document.getElementById("toast-root");
+  var el=document.createElement("div");
+  el.className="toast "+tipo;
+  el.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">'+(iconos[tipo]||iconos.info)+'</svg><span>'+esc(msg)+'</span>';
+  root.appendChild(el);
+  setTimeout(function(){ el.style.transition="opacity .3s,transform .3s"; el.style.opacity="0"; el.style.transform="translateX(20px)";
+    setTimeout(function(){ if(el.parentNode) el.parentNode.removeChild(el); },300); }, 3200);
+}
+
+/* ===========================================================================
+   19. SIDEBAR (responsive)
+   =========================================================================== */
+function toggleSidebar(){ document.getElementById("app").classList.toggle("sidebar-open"); }
+function cerrarSidebar(){ document.getElementById("app").classList.remove("sidebar-open"); }
+
+/* ===========================================================================
+   20. MANEJADORES GLOBALES DE EVENTOS (delegación)
+   =========================================================================== */
+function onClick(e){
+  var navEl=e.target.closest("[data-nav]");
+  if(navEl){
+    var nav=navEl.getAttribute("data-nav");
+    if(nav==="ot-nuevo"){ irA("#ot/nuevo"); return; }
+    var mNuevo=nav.match(/^(\w+)-nuevo$/);
+    if(mNuevo){
+      var folio=navEl.getAttribute("data-folio");
+      irA("#"+mNuevo[1]+"/nuevo"+(folio?"/"+encodeURIComponent(folio):""));
+      return;
+    }
+    irA("#"+nav); return;
+  }
+  var actEl=e.target.closest("[data-action]");
+  if(!actEl) return;
+  var act=actEl.getAttribute("data-action");
+  var ent=actEl.getAttribute("data-ent");
+  var id=actEl.getAttribute("data-id");
+
+  switch(act){
+    case "toggle-sidebar": toggleSidebar(); break;
+    case "expediente": irA("#expediente/"+encodeURIComponent(actEl.getAttribute("data-folio"))); break;
+    case "editar": irA("#"+ent+"/editar/"+encodeURIComponent(id)); break;
+    case "eliminar": eliminarRegistro(ent,id); break;
+    case "cancelar-form": history.length>1?history.back():irA("#"+ent); break;
+    case "limpiar-filtros": filtrosTablero={q:"",tecnico:"",estado:"",desde:"",hasta:""}; renderTablero(); break;
+    case "eq-pag": equiposEstado.pag=parseInt(actEl.getAttribute("data-pag"),10); renderEquipos(); break;
+    case "cat-add": catAgregar(actEl.getAttribute("data-cat")); break;
+    case "cat-edit": catEditar(actEl.getAttribute("data-cat"),parseInt(actEl.getAttribute("data-i"),10)); break;
+    case "cat-del": catEliminar(actEl.getAttribute("data-cat"),parseInt(actEl.getAttribute("data-i"),10)); break;
+    case "export-json": exportarJSON(); break;
+    case "trigger-restore": document.getElementById("fileRestore").click(); break;
+    case "export-modulo": exportarModulo(ent); break;
+    case "export-tablero": exportarTablero(); break;
+    case "wipe": borrarTodo(); break;
+  }
+}
+
+function onInput(e){
+  var t=e.target;
+  // Autocompletado de equipo en OT
+  if(t.dataset && t.dataset.inventario){
+    autocompletarEquipo(t.closest("form"));
+  }
+  // Vista previa de moneda
+  if(t.dataset && t.dataset.currency){
+    actualizarMoneda(t.closest("form"),t.name);
+  }
+  // Filtros del tablero
+  if(t.dataset && t.dataset.filtro){
+    filtrosTablero[t.dataset.filtro]=t.value;
+    pintarTablaTablero();
+  }
+  // Búsqueda en listas
+  if(t.dataset && t.dataset.busqueda){
+    busquedaLista[t.dataset.busqueda]=t.value;
+    var pos=t.selectionStart;
+    renderLista(t.dataset.busqueda);
+    var nb=document.getElementById("busq"); if(nb){ nb.focus(); try{nb.setSelectionRange(pos,pos);}catch(_){} }
+  }
+  // Búsqueda en equipos
+  if(t.dataset && t.dataset.busquedaEq){
+    equiposEstado.q=t.value; equiposEstado.pag=1;
+    var pos2=t.selectionStart;
+    renderEquipos();
+    var nb2=document.getElementById("busqEq"); if(nb2){ nb2.focus(); try{nb2.setSelectionRange(pos2,pos2);}catch(_){} }
+  }
+}
+
+function onSubmit(e){
+  if(e.target.id==="form-ent"){ e.preventDefault(); guardarFormulario(e.target); }
+}
+
+/* Búsqueda rápida del topbar: ir directo a un expediente por Folio SIGEM. */
+function onQuickSearch(e){
+  if(e.key!=="Enter") return;
+  var q=e.target.value.trim();
+  if(!q) return;
+  var ot=DB.ordenes.find(function(o){return o.folio===q;}) ||
+         DB.ordenes.find(function(o){return norm(o.folio).indexOf(norm(q))>=0;});
+  if(ot){ irA("#expediente/"+encodeURIComponent(ot.folio)); e.target.value=""; }
+  else toast("No se encontró ninguna OT con ese Folio SIGEM.","error");
+}
+
+/* ===========================================================================
+   21. INICIALIZACIÓN
+   =========================================================================== */
+function init(){
+  cargarDB();
+  document.addEventListener("click",onClick);
+  var view=document.getElementById("view");
+  view.addEventListener("input",onInput);
+  view.addEventListener("submit",onSubmit);
+  window.addEventListener("hashchange",router);
+  document.getElementById("quickSearch").addEventListener("keydown",onQuickSearch);
+  if(!location.hash) location.hash="#tablero";
+  router();
+}
+document.addEventListener("DOMContentLoaded",init);
+</script>
+</body>
+</html>
